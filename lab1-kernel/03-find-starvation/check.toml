@@ -1,0 +1,9 @@
+[check.fast_task]
+min = 1
+max = 4294967295
+unit = "runs"
+
+[check.monitor_task]
+min = 1
+max = 4294967295
+unit = "runs"

@@ -1,0 +1,37 @@
+cmake_minimum_required(VERSION 3.13)
+set(PICO_BOARD pico2_w CACHE STRING "Pico W / Pico 2 W board")
+
+if(NOT DEFINED ENV{PICO_SDK_PATH})
+    message(FATAL_ERROR "Set PICO_SDK_PATH to your Pico SDK checkout")
+endif()
+include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
+
+if(NOT DEFINED ENV{FREERTOS_KERNEL_PATH})
+    message(FATAL_ERROR "Set FREERTOS_KERNEL_PATH to Raspberry Pi's FreeRTOS-Kernel checkout")
+endif()
+set(_kernel "$ENV{FREERTOS_KERNEL_PATH}")
+set(_imports
+    "${_kernel}/portable/ThirdParty/GCC/RP2350_ARM_NTZ/FreeRTOS_Kernel_import.cmake"
+    "${_kernel}/portable/ThirdParty/Community-Supported-Ports/GCC/RP2350_ARM_NTZ/FreeRTOS_Kernel_import.cmake")
+foreach(_candidate IN LISTS _imports)
+    if(EXISTS "${_candidate}")
+        set(_freertos_import "${_candidate}")
+        break()
+    endif()
+endforeach()
+if(NOT _freertos_import)
+    message(FATAL_ERROR "RP2350 FreeRTOS import file not found under ${_kernel}")
+endif()
+
+project(eos_l1_task_baseline C CXX ASM)
+set(CMAKE_C_STANDARD 11)
+pico_sdk_init()
+include("${_freertos_import}")
+
+set(L1_MAIN_SOURCE "${CMAKE_CURRENT_LIST_DIR}/main.c" CACHE FILEPATH "Main source used for the L1 exercise")
+add_executable(l1_task_baseline "${L1_MAIN_SOURCE}" rtos_hooks.c)
+target_include_directories(l1_task_baseline PRIVATE . ../../common)
+target_link_libraries(l1_task_baseline pico_stdlib FreeRTOS-Kernel-Heap4)
+pico_enable_stdio_usb(l1_task_baseline 1)
+pico_enable_stdio_uart(l1_task_baseline 1)
+pico_add_extra_outputs(l1_task_baseline)

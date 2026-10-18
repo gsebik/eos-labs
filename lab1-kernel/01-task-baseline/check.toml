@@ -1,0 +1,9 @@
+[check.task_a]
+min = 1
+max = 4294967295
+unit = "runs"
+
+[check.task_b]
+min = 1
+max = 4294967295
+unit = "runs"

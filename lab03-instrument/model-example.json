@@ -1,0 +1,4 @@
+[
+  {"name": "irq_budget", "priority": 4, "C_us": 20, "T_us": 1000, "D_us": 1000},
+  {"name": "dsp", "priority": 3, "C_us": 1400, "B_us": 2700, "T_us": 5120, "D_us": 5120}
+]

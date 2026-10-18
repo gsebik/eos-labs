@@ -1,0 +1,337 @@
+/* EP-0172 display driver: a 3.5" ST7796 panel on SPI0.
+ *
+ * This renderer is deliberately blocking: the display task waits for every
+ * transfer. That is the baseline the timing lab investigates, not a claim that
+ * DMA would let a task sleep. Only the display task owns SPI0.
+ *
+ * Coordinates. The panel is mounted landscape on the carrier, so it is
+ * addressed as 480 pixels across and 320 down, with the origin at the top-left:
+ *
+ *     x = 0 .. 479   left to right   (frequency: band 0 is at the left)
+ *     y = 0 .. 319   top to bottom   (a bar grows upward, so it uses small y)
+ *
+ * MADCTL (0x36) decides how those coordinates map onto the glass. The four
+ * landscape values are 0x28, 0x68, 0x88 and 0xE8; they are the four rotations
+ * of the same image, and exactly one of them is upright for a given carrier.
+ * On this station 0xE8 is correct. If the picture is ever rotated or mirrored,
+ * change only this value and rebuild - nothing else needs to move. */
+#include "panel.h"
+#include "pico/stdlib.h"
+#include "hardware/spi.h"
+
+static uint32_t spi_hz;
+static void command(uint8_t value)
+{
+    while (spi_is_busy(spi0)) tight_loop_contents();
+    gpio_put(6, 0);
+    spi_write_blocking(spi0, &value, 1);
+    while (spi_is_busy(spi0)) tight_loop_contents();
+    gpio_put(6, 1);
+}
+static void bytes(const uint8_t *data, size_t count)
+{
+    spi_write_blocking(spi0, data, count);
+}
+static void setting(uint8_t reg, uint8_t value)
+{
+    command(reg);
+    bytes(&value, 1);
+}
+static void rectangle(unsigned x, unsigned y, unsigned width, unsigned height,
+                      uint16_t color)
+{
+    const unsigned right = x + width - 1;
+    const unsigned bottom = y + height - 1;
+    uint8_t columns[] = { x >> 8, x & 255, right >> 8, right & 255 };
+    uint8_t rows[] = { y >> 8, y & 255, bottom >> 8, bottom & 255 };
+    command(0x2a); bytes(columns, sizeof columns);
+    command(0x2b); bytes(rows, sizeof rows);
+    command(0x2c);
+    static uint8_t line[960];
+    for (unsigned i = 0; i < width; ++i) {
+        line[2 * i] = color >> 8;
+        line[2 * i + 1] = color & 255;
+    }
+    for (unsigned y = 0; y < height; ++y) bytes(line, width * 2);
+}
+
+void sig_panel_init(void)
+{
+    spi_hz = spi_init(spi0, 16000000);
+    gpio_set_function(2, GPIO_FUNC_SPI);
+    gpio_set_function(3, GPIO_FUNC_SPI);
+    for (unsigned pin = 5; pin <= 7; ++pin) {
+        gpio_init(pin);
+        gpio_set_dir(pin, GPIO_OUT);
+        gpio_put(pin, 1);
+    }
+    sleep_ms(10); gpio_put(7, 0);
+    sleep_ms(20); gpio_put(7, 1); sleep_ms(120);
+    gpio_put(5, 0);
+    command(0x01); sleep_ms(120);
+    command(0x11); sleep_ms(120);
+    setting(0xf0, 0xc3); setting(0xf0, 0x96);
+    setting(0x36, 0xE8); setting(0x3a, 0x55); setting(0xb4, 0x01);
+    const uint8_t b6[] = { 0x80, 0x02, 0x3b };
+    command(0xb6); bytes(b6, sizeof b6);
+    const uint8_t e8[] = { 0x40, 0x8a, 0, 0, 0x29, 0x19, 0xa5, 0x33 };
+    command(0xe8); bytes(e8, sizeof e8);
+    setting(0xc1, 0x06); setting(0xc2, 0xa7); setting(0xc5, 0x18);
+    sleep_ms(120);
+    const uint8_t positive[] = {
+        0xf0, 9, 0x0b, 6, 4, 0x15, 0x2f, 0x54, 0x42, 0x3c, 0x17, 0x14, 0x18, 0x1b
+    };
+    const uint8_t negative[] = {
+        0xe0, 9, 0x0b, 6, 4, 3, 0x2b, 0x43, 0x42, 0x3b, 0x16, 0x14, 0x17, 0x1b
+    };
+    command(0xe0); bytes(positive, sizeof positive);
+    command(0xe1); bytes(negative, sizeof negative);
+    setting(0xf0, 0x3c); setting(0xf0, 0x69);
+    sleep_ms(120);
+    /* INVON. This panel comes up with inverted pixel data: black shows as
+     * white and green as magenta. 52Pi's own driver sends 0x21; the es201
+     * reference init does not (inverted bars still look like bars, so it went
+     * unnoticed). Without this the cleared background would be white. */
+    command(0x21);
+    command(0x29);
+    /* GRAM is undefined after reset, so the area the renderer does not touch
+     * would show as noise. Clear the panel once here; the periodic renderer
+     * redraws a bounded plot region, so a single fill is enough. */
+    sleep_ms(20);
+    rectangle(0, 0, 480, 320, 0x0000);
+}
+
+/* ---- Plot geometry -------------------------------------------------------
+ * The panel is mounted landscape, but on this carrier its MADCTL cannot
+ * produce an upright image: the mirror bits move the horizontal direction and
+ * leave the picture upside down. The renderer therefore compensates in
+ * software, and these three lines are the whole of it:
+ *
+ *   1. the layout below is written in the order the eye sees it;
+ *   2. glyph rows are mirrored, so text is not upside down;
+ *   3. send_row() reverses each row, so the picture is not left-to-right
+ *      mirrored.
+ *
+ * Together those apply the 180 degree rotation the panel is missing. If the
+ * panel is ever replaced, only this file needs revisiting.
+ *
+ * Everything below is written in "glass" rows, with the panel's flip already
+ * applied, so the code reads in the order the eye sees:
+ *
+ *     y = 0                     +---------------------------+
+ *                               |  frequency axis + labels  |
+ *     y = AXIS_H                +---------------------------+
+ *                               |                           |
+ *                               |      spectrum plot        |  bar HEIGHT
+ *                               |                           |  = band strength
+ *     y = AXIS_H + rows         +---------------------------+
+ *                               |  generated tone readout   |
+ *     y = AXIS_H + rows + TEXT_H+---------------------------+
+ *
+ * `rows` is the tallest bar in pixels, from EOS_DISPLAY_ROWS. It is both the
+ * plot height and the pixel-transfer budget, so doubling it roughly doubles
+ * the redraw time: an experiment control, not a cosmetic setting. */
+enum { PANEL_W = 480, PANEL_H = 320, BAND_PITCH = 15, BAR_W = 11 };
+enum { AXIS_H = 12, TEXT_H = 12 };
+enum { PLOT_MAX = PANEL_H - AXIS_H - TEXT_H };
+
+/* Colours in RGB565: 5 bits red, 6 bits green, 5 bits blue. */
+enum { COLOUR_BLACK = 0x0000, COLOUR_BAR = 0x07e0, COLOUR_AXIS = 0x7bef,
+       COLOUR_TONE = 0xfd20 };
+
+/* 5x7 glyphs: seven rows, five bits each, left column is the high bit. */
+static const uint8_t glyphs[][7] = {
+    {14, 17, 19, 21, 25, 17, 14}, /* 0 */
+    {4, 12, 4, 4, 4, 4, 14},      /* 1 */
+    {14, 17, 1, 2, 4, 8, 31},     /* 2 */
+    {31, 2, 4, 2, 1, 17, 14},     /* 3 */
+    {2, 6, 10, 18, 31, 2, 2},     /* 4 */
+    {31, 16, 30, 1, 1, 17, 14},   /* 5 */
+    {6, 8, 16, 30, 17, 17, 14},   /* 6 */
+    {31, 1, 2, 4, 8, 8, 8},       /* 7 */
+    {14, 17, 17, 14, 17, 17, 14}, /* 8 */
+    {14, 17, 17, 15, 1, 2, 12},   /* 9 */
+    {0, 0, 0, 0, 0, 12, 12},      /* . */
+    {0, 0, 0, 0, 0, 0, 0},        /* anything unknown: blank */
+    {17, 17, 17, 31, 17, 17, 17}, /* H */
+    {31, 1, 2, 4, 8, 16, 31},     /* z */
+    {0, 0, 0, 0, 0, 0, 0},        /* space */
+    {16, 18, 20, 24, 20, 18, 17}, /* k */
+};
+enum { GLYPH_UNKNOWN = 11, GLYPH_H = 12, GLYPH_Z = 13, GLYPH_SPACE = 14, GLYPH_K = 15 };
+
+/* The axis is labelled in kilohertz, the same unit as the tone readout below
+ * the plot, so the two can be compared directly. Band b starts at FFT bin 4b
+ * and the bin spacing is 50000/256 = 195.3125 Hz, so band 8 starts at exactly
+ * 6.25 kHz. These are the band's lower edges, not its centre. */
+static const struct { unsigned band; const char *text; } axis_labels[] = {
+    {0, "0"}, {8, "6.25"}, {16, "12.5"}, {24, "18.75"},
+};
+
+/* Where a frequency sits on this axis: FFT bin = f * 256 / 50000, and each
+ * band groups four consecutive bins. */
+static unsigned band_of(uint32_t hz)
+{
+    const unsigned bin = (unsigned)(((uint64_t)hz * 256u) / 50000u);
+    const unsigned band = bin / 4u;
+    return band < SIG_BANDS ? band : SIG_BANDS - 1;
+}
+
+static uint16_t row_pixels[PANEL_W];
+static uint8_t row_bytes[PANEL_W * 2];
+static unsigned bar_height[SIG_BANDS];
+static uint32_t tone_hz;
+
+static unsigned glyph_index(char c)
+{
+    if (c >= '0' && c <= '9') return (unsigned)(c - '0');
+    if (c == '.') return 10;
+    if (c == 'H') return GLYPH_H;
+    if (c == 'z') return GLYPH_Z;
+    if (c == ' ') return GLYPH_SPACE;
+    return GLYPH_UNKNOWN;
+}
+
+/* Which glyph row (0..6) belongs on screen row y, or 7 when y is outside the
+ * band that starts at band_top. Mirrored, because the panel is. */
+static unsigned text_row(unsigned y, unsigned band_top)
+{
+    if (y < band_top + 3 || y > band_top + 9) return 7;
+    return 9 - (y - band_top);
+}
+
+/* Paint one row of a string, six pixels per character. */
+static void put_text(unsigned x0, unsigned glyph_row_index, const char *text)
+{
+    for (unsigned i = 0; text[i] != '\0'; ++i) {
+        const unsigned bits = glyphs[glyph_index(text[i])][glyph_row_index];
+        for (unsigned column = 0; column < 5; ++column) {
+            const unsigned px = x0 + i * 6 + column;
+            if ((bits & (16u >> column)) && px < PANEL_W) row_pixels[px] = COLOUR_AXIS;
+        }
+    }
+}
+
+/* Append `value` as at least `width` decimal digits, most significant first. */
+static unsigned append_digits(char *out, unsigned at, unsigned value, unsigned width)
+{
+    char digits[12];
+    unsigned count = 0;
+    do {
+        digits[count++] = (char)('0' + value % 10);
+        value /= 10;
+    } while (value != 0 || count < width);
+    while (count) out[at++] = digits[--count];
+    return at;
+}
+
+/* Render a frequency as kilohertz with two decimals and a unit, so the readout
+ * and the axis labels are directly comparable: 3125 -> "3.13 kHz". */
+static void format_khz(uint32_t hz, char *out)
+{
+    const unsigned hundredths = (unsigned)((hz + 5u) / 10u);
+    unsigned at = append_digits(out, 0, hundredths / 100u, 1);
+    out[at++] = '.';
+    at = append_digits(out, at, hundredths % 100u, 2);
+    out[at++] = ' ';
+    out[at++] = 'k';
+    out[at++] = 'H';
+    out[at++] = 'z';
+    out[at] = '\0';
+}
+
+/* Program the drawing window (CASET/RASET) and start a memory write (RAMWR).
+ * The controller then advances the write position itself, so every following
+ * pixel goes to the next position inside the window. */
+static void open_window(unsigned x0, unsigned y0, unsigned x1, unsigned y1)
+{
+    const uint8_t columns[] = { x0 >> 8, x0 & 255, x1 >> 8, x1 & 255 };
+    const uint8_t rows[] = { y0 >> 8, y0 & 255, y1 >> 8, y1 & 255 };
+    command(0x2a); bytes(columns, sizeof columns);
+    command(0x2b); bytes(rows, sizeof rows);
+    command(0x2c);
+}
+
+/* Send the composed row. The window is already open, so this is pure pixel
+ * data: no commands, no address setup.
+ *
+ * The row is reversed on the way out. That is the horizontal half of the
+ * panel's 180 degree rotation: composing and sending in the same order would
+ * mirror the picture left-to-right. Because the whole row is reversed, the
+ * axis labels stay readable without any extra work. */
+static void send_row(void)
+{
+    for (unsigned x = 0; x < PANEL_W; ++x) {
+        const uint16_t pixel = row_pixels[PANEL_W - 1 - x];
+        row_bytes[2 * x] = (uint8_t)(pixel >> 8);
+        row_bytes[2 * x + 1] = (uint8_t)(pixel & 255);
+    }
+    bytes(row_bytes, sizeof row_bytes);
+}
+
+/* Convert one band's strength into a bar height in pixels. The first test also
+ * rejects NaN and the second rejects infinity, so the cast cannot overflow. */
+static unsigned bar_pixels(float level, unsigned rows)
+{
+    if (!(level > 0.0f)) return 0;
+    if (level >= 10.0f) return rows;
+    return (unsigned)(level * (float)rows / 10.0f);
+}
+
+/* Tell the renderer which tone the generator is currently producing. */
+void sig_panel_set_tone(uint32_t hz) { tone_hz = hz; }
+
+/* Draw one complete frame. `rows` is the tallest bar (EOS_DISPLAY_ROWS). */
+void sig_panel_draw(const sig_result_t *result, unsigned rows)
+{
+    if (rows > PLOT_MAX) rows = PLOT_MAX;
+    for (unsigned band = 0; band < SIG_BANDS; ++band) {
+        bar_height[band] = bar_pixels(result->bands[band], rows);
+    }
+    const unsigned plot_top = AXIS_H;
+    const unsigned tone_top = AXIS_H + rows;
+    char tone_text[16];
+    format_khz(tone_hz, tone_text);
+    const unsigned tone_marker = band_of(tone_hz) * BAND_PITCH;
+
+    open_window(0, 0, PANEL_W - 1, tone_top + TEXT_H - 1);
+    for (unsigned y = 0; y < tone_top + TEXT_H; ++y) {
+        for (unsigned x = 0; x < PANEL_W; ++x) row_pixels[x] = COLOUR_BLACK;
+        if (y < plot_top) {
+            const unsigned glyph = text_row(y, 0);
+            if (y == 1) {
+                for (unsigned i = 0; i < sizeof axis_labels / sizeof axis_labels[0]; ++i) {
+                    const unsigned start = axis_labels[i].band * BAND_PITCH;
+                    row_pixels[start] = COLOUR_AXIS;
+                    row_pixels[start + 1] = COLOUR_AXIS;
+                }
+                /* A distinct marker under the band the generator is producing. */
+                row_pixels[tone_marker] = COLOUR_TONE;
+                row_pixels[tone_marker + 1] = COLOUR_TONE;
+            }
+            for (unsigned i = 0; i < sizeof axis_labels / sizeof axis_labels[0]; ++i) {
+                if (glyph < 7) {
+                    put_text(axis_labels[i].band * BAND_PITCH, glyph,
+                             axis_labels[i].text);
+                }
+            }
+            if (glyph < 7) put_text(PANEL_W - 24, glyph, "kHz");
+        } else if (y < tone_top) {
+            /* Every plot row is written, so a shrinking bar erases above it. */
+            const unsigned above_floor = y - plot_top;
+            for (unsigned band = 0; band < SIG_BANDS; ++band) {
+                const uint16_t color =
+                    above_floor < bar_height[band] ? COLOUR_BAR : COLOUR_BLACK;
+                for (unsigned x = band * BAND_PITCH; x < band * BAND_PITCH + BAR_W; ++x) {
+                    row_pixels[x] = color;
+                }
+            }
+        } else {
+            const unsigned glyph = text_row(y, tone_top);
+            if (glyph < 7) put_text(6, glyph, tone_text);
+        }
+        send_row();
+    }
+}
+
+uint32_t sig_panel_spi_hz(void) { return spi_hz; }
