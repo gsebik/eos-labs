@@ -16,14 +16,15 @@ set(CMAKE_C_STANDARD 11)
 pico_sdk_init()
 include(${_port})
 
-option(EOS_SIG_SETTINGS_MUTEX "Use an inheritance mutex for the settings lock" ON)
-option(EOS_LONG_RESULT_LOCK "ON: frozen display fault; OFF: editable student path" ON)
+option(EOS_SIG_SETTINGS_MUTEX "LEGACY, unused: settings are always a mutex" ON)
+option(EOS_INHERITANCE_MUTEX "Use an inheritance mutex in the priority-inheritance demo" ON)
+option(EOS_LONG_RESULT_LOCK "ON: hold the spectrum mutex across the redraw (comparison)" OFF)
 set(EOS_DEADLINE_US 10240 CACHE STRING "Block ready-to-release deadline in microseconds")
 set(EOS_DSP_REPEATS 4 CACHE STRING "Extra block-processing repeats")
 set(EOS_DISPLAY_ROWS 40 CACHE STRING "Plot height and per-band pixel-transfer budget")
 set(EOS_DISPLAY_PERIOD_MS 100 CACHE STRING "Display redraw period")
 set(EOS_UI_PERIOD_MS 20 CACHE STRING "Settings update period")
-set(EOS_SETTINGS_ITERS 2000 CACHE STRING "Settings-write work iterations")
+set(EOS_SETTINGS_ITERS 2000 CACHE STRING "LEGACY, unused: no artificial settings workload")
 # This literal list is also the picolab build-knob discovery interface. It must
 # stay on ONE line: picolab discovers the option names with a line-based search,
 # so a wrapped list makes it warn that valid options are typos.
@@ -37,7 +38,7 @@ if(EOS_DEADLINE_US GREATER 1000000 OR EOS_DSP_REPEATS GREATER 64
    OR EOS_UI_PERIOD_MS GREATER 10000 OR EOS_SETTINGS_ITERS GREATER 3000000)
     message(FATAL_ERROR "One or more experiment settings exceed their limit")
 endif()
-foreach(opt EOS_SIG_SETTINGS_MUTEX EOS_LONG_RESULT_LOCK)
+foreach(opt EOS_SIG_SETTINGS_MUTEX EOS_LONG_RESULT_LOCK EOS_INHERITANCE_MUTEX)
     message(STATUS "${opt}=${${opt}}")
 endforeach()
 
@@ -67,3 +68,14 @@ foreach(target lab03_instrument_rtos lab03_instrument_foreground)
     pico_enable_stdio_uart(${target} 1)
     pico_add_extra_outputs(${target})
 endforeach()
+
+# Separate demonstration program for Task 2: three tasks, one resource. It does
+# not share the instrument's acquisition, FFT or display code.
+add_executable(lab03_priority_inheritance "${CMAKE_CURRENT_LIST_DIR}/priority_inheritance.c")
+target_include_directories(lab03_priority_inheritance PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
+target_compile_definitions(lab03_priority_inheritance PRIVATE
+    EOS_INHERITANCE_MUTEX=$<BOOL:${EOS_INHERITANCE_MUTEX}>)
+target_link_libraries(lab03_priority_inheritance pico_stdlib FreeRTOS-Kernel-Heap4)
+pico_enable_stdio_usb(lab03_priority_inheritance 0)
+pico_enable_stdio_uart(lab03_priority_inheritance 1)
+pico_add_extra_outputs(lab03_priority_inheritance)

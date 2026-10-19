@@ -24,7 +24,12 @@ import struct
 RECORD = struct.Struct('<QIIII')
 EVENTS = {1: 'block_ready', 2: 'work_start', 3: 'work_complete',
           4: 'block_release', 5: 'drop', 6: 'display_start', 7: 'display_done',
-          8: 'settings_write', 9: 'settings_wait', 10: 'publish_wait'}
+          8: 'settings_write', 9: 'settings_wait', 10: 'publish_wait',
+          11: 'result_published'}
+# The two completion endpoints measure different obligations. Buffer return
+# decides whether acquisition can reuse the storage; publication decides whether
+# the worker can take its next block. They must not share one verdict.
+COMPLETIONS = ('block_release', 'result_published')
 POOL_SIZE = 3
 METADATA_WORDS = 3
 
@@ -48,7 +53,29 @@ def decode(raw, count, truncated=0, frozen=0):
     return header, records
 
 
-def monitor(header, records, deadline_us=10240):
+def close(job, pending, response_time, deadline_us, phases, jobs, finished,
+          violations):
+    """Close one job at the selected completion endpoint."""
+    response = response_time - pending['ready']
+    if response > deadline_us:
+        violations.append(dict(job=job, why='response exceeds deadline',
+                               response_us=response, deadline_us=deadline_us))
+    phases.append(dict(
+        job=job, completion=response_time == pending.get('published_at')
+        and 'result_published' or 'block_release',
+        response_us=response,
+        settings_wait_us=pending['started_at'] - pending['ready'],
+        compute_us=pending['completed_at'] - pending['started_at'],
+        publish_wait_us=response_time - pending['completed_at'],
+        buffer_return_us=(pending['released_at'] - pending['ready']
+                          if 'released_at' in pending else None),
+        publication_response_us=(pending['published_at'] - pending['ready']
+                                 if 'published_at' in pending else None)))
+    jobs.pop(job)
+    finished.append(job)
+
+
+def monitor(header, records, deadline_us=10240, completion='block_release'):
     if (header.get('type'), header.get('version'), header.get('time_domain')) != (
             'eos-instrument-trace', 2, 'target-timer-us'):
         raise ValueError('unsupported trace schema or time domain')
@@ -61,6 +88,8 @@ def monitor(header, records, deadline_us=10240):
         raise ValueError('invalid truncated/frozen flags')
     if type(deadline_us) is not int or deadline_us <= 0:
         raise ValueError('deadline must be a positive integer number of microseconds')
+    if completion not in COMPLETIONS:
+        raise ValueError(f'completion must be one of {COMPLETIONS}')
     jobs, owners, finished, violations = {}, {}, [], []
     phases = []
     previous = -1
@@ -106,22 +135,23 @@ def monitor(header, records, deadline_us=10240):
                 violations.append(dict(index=index, job=job,
                                        why='release without completion'))
                 continue
-            # The deadline is ready-to-release: the buffer is unavailable to
-            # DMA until it is released, not merely until the arithmetic ends.
-            response = time - pending['ready']
-            if response > deadline_us:
-                violations.append(dict(index=index, job=job,
-                                       why='response exceeds deadline',
-                                       response_us=response,
-                                       deadline_us=deadline_us))
-            phases.append(dict(
-                job=job, response_us=response,
-                settings_wait_us=pending['started_at'] - pending['ready'],
-                compute_us=pending['completed_at'] - pending['started_at'],
-                publish_wait_us=time - pending['completed_at']))
+            # Input storage becomes available to DMA here, not when the
+            # arithmetic ends. Publication is a separate, later obligation.
+            pending['released_at'] = time
             owners.pop(pending['buffer'], None)
-            jobs.pop(job)
-            finished.append(job)
+            if completion == 'block_release':
+                close(job, pending, time, deadline_us, phases, jobs, finished,
+                      violations)
+        elif kind == 'result_published':
+            # Optional for older traces: a trace recorded before this event
+            # existed still decodes, because block_release then closes the job.
+            pending = jobs.get(job)
+            if pending is None:
+                continue
+            pending['published_at'] = time
+            if completion == 'result_published':
+                close(job, pending, time, deadline_us, phases, jobs, finished,
+                      violations)
         elif kind == 'drop':
             violations.append(dict(index=index, job=job, why='drop'))
     if violations:
@@ -155,6 +185,8 @@ def main():
     check = commands.add_parser('check')
     check.add_argument('trace', type=Path)
     check.add_argument('--deadline-us', type=int, default=10240)
+    check.add_argument('--completion', choices=COMPLETIONS, default='block_release',
+                       help='which obligation to check against the deadline')
     args = parser.parse_args()
     try:
         if args.command == 'decode':
@@ -176,7 +208,8 @@ def main():
                  if line.strip()]
         if not lines:
             raise ValueError('empty trace')
-        result = monitor(lines[0], lines[1:], args.deadline_us)
+        result = monitor(lines[0], lines[1:], args.deadline_us,
+                         completion=args.completion)
         print(json.dumps(result, indent=2))
         return 1 if result['verdict'] == 'FAIL' else (2 if result['verdict'] == 'INCONCLUSIVE' else 0)
     except (OSError, ValueError, TypeError, KeyError) as error:

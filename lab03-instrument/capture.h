@@ -30,20 +30,26 @@ typedef struct {
 } sig_block_t;
 
 typedef struct {
-    uint32_t completed, dropped, overruns;
+    /* Kept separate on purpose: a rejected queue send, a completion with no
+     * free buffer and an ADC FIFO overrun are three different faults. */
+    uint32_t completed, dropped, overruns, queue_rejected;
 } sig_capture_stats_t;
 
 /* Single-core capture component. All calls and its DMA IRQ belong to core 0.
  * A PROCESSING buffer is never assigned to DMA. With no free buffer, the DMA
  * writes into private discard storage and the completed block is counted as
  * dropped, so a reader is never overwritten. */
-void sig_capture_start(void (*ready_from_isr)(void));
+/* Create the delivery object and start acquisition. The RTOS target creates a
+ * three-descriptor FreeRTOS queue; the foreground target keeps the ring. */
+void sig_capture_start(void);
 void sig_signal_start(void);
 /* Move the generated test tone to the next/previous bin-aligned frequency. */
 void sig_signal_step(int direction);
 /* Current generated tone in Hz, for reporting. */
 uint32_t sig_signal_hz(void);
-bool sig_capture_take(sig_block_t *block);
+/* Wait for one completed block. The RTOS build blocks in xQueueReceive; the
+ * foreground build polls and returns false when nothing is ready. */
+bool sig_capture_receive(sig_block_t *block);
 void sig_capture_release(uint32_t id);
 sig_capture_stats_t sig_capture_stats(void);
 uint32_t sig_adc_hz(void);

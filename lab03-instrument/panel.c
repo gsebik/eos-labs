@@ -160,13 +160,16 @@ static const uint8_t glyphs[][7] = {
 };
 enum { GLYPH_UNKNOWN = 11, GLYPH_H = 12, GLYPH_Z = 13, GLYPH_SPACE = 14, GLYPH_K = 15 };
 
-/* The axis is labelled in kilohertz, the same unit as the tone readout below
- * the plot, so the two can be compared directly. Band b starts at FFT bin 4b
- * and the bin spacing is 50000/256 = 195.3125 Hz, so band 8 starts at exactly
- * 6.25 kHz. These are the band's lower edges, not its centre. */
-static const struct { unsigned band; const char *text; } axis_labels[] = {
-    {0, "0"}, {8, "6.25"}, {16, "12.5"}, {24, "18.75"},
+/* The axis is absolute, in kilohertz, spanning the whole 0-25 kHz range at
+ * round 5 kHz steps. It must be absolute rather than relative to the tone: a
+ * harmonic-labelled axis would move with the signal, so two different tones
+ * would look identical and could not be compared. The amber marker under the
+ * plot shows where the current fundamental sits on that fixed scale.
+ * Each mark names a frequency; it is drawn at the band that contains it. */
+static const struct { uint32_t hz; const char *text; } axis_marks[] = {
+    {0, "0"}, {5000, "5"}, {10000, "10"}, {15000, "15"}, {20000, "20"},
 };
+enum { AXIS_MARK_COUNT = sizeof axis_marks / sizeof axis_marks[0] };
 
 /* Where a frequency sits on this axis: FFT bin = f * 256 / 50000, and each
  * band groups four consecutive bins. */
@@ -225,19 +228,16 @@ static unsigned append_digits(char *out, unsigned at, unsigned value, unsigned w
     return at;
 }
 
-/* Render a frequency as kilohertz with two decimals and a unit, so the readout
- * and the axis labels are directly comparable: 3125 -> "3.13 kHz". */
-static void format_khz(uint32_t hz, char *out)
+/* Render a frequency as kilohertz with two decimals, e.g. 3125 -> "3.13".
+ * The axis and the tone readout share this, so their units always agree. */
+static unsigned format_khz(uint32_t hz, char *out)
 {
     const unsigned hundredths = (unsigned)((hz + 5u) / 10u);
     unsigned at = append_digits(out, 0, hundredths / 100u, 1);
     out[at++] = '.';
     at = append_digits(out, at, hundredths % 100u, 2);
-    out[at++] = ' ';
-    out[at++] = 'k';
-    out[at++] = 'H';
-    out[at++] = 'z';
     out[at] = '\0';
+    return at;
 }
 
 /* Program the drawing window (CASET/RASET) and start a memory write (RAMWR).
@@ -291,7 +291,14 @@ void sig_panel_draw(const sig_result_t *result, unsigned rows)
     const unsigned plot_top = AXIS_H;
     const unsigned tone_top = AXIS_H + rows;
     char tone_text[16];
-    format_khz(tone_hz, tone_text);
+    unsigned tone_length = format_khz(tone_hz, tone_text);
+    const char unit[] = " kHz";
+    for (unsigned i = 0; unit[i] != '\0'; ++i) tone_text[tone_length++] = unit[i];
+    tone_text[tone_length] = '\0';
+    unsigned mark_band[AXIS_MARK_COUNT];
+    for (unsigned i = 0; i < AXIS_MARK_COUNT; ++i) {
+        mark_band[i] = band_of(axis_marks[i].hz);
+    }
     const unsigned tone_marker = band_of(tone_hz) * BAND_PITCH;
 
     open_window(0, 0, PANEL_W - 1, tone_top + TEXT_H - 1);
@@ -299,21 +306,18 @@ void sig_panel_draw(const sig_result_t *result, unsigned rows)
         for (unsigned x = 0; x < PANEL_W; ++x) row_pixels[x] = COLOUR_BLACK;
         if (y < plot_top) {
             const unsigned glyph = text_row(y, 0);
-            if (y == 1) {
-                for (unsigned i = 0; i < sizeof axis_labels / sizeof axis_labels[0]; ++i) {
-                    const unsigned start = axis_labels[i].band * BAND_PITCH;
+            for (unsigned i = 0; i < AXIS_MARK_COUNT; ++i) {
+                const unsigned start = mark_band[i] * BAND_PITCH;
+                if (y == 1) {
                     row_pixels[start] = COLOUR_AXIS;
                     row_pixels[start + 1] = COLOUR_AXIS;
                 }
-                /* A distinct marker under the band the generator is producing. */
+                if (glyph < 7) put_text(start, glyph, axis_marks[i].text);
+            }
+            if (y == 1) {
+                /* Amber tick under the band the generator is producing. */
                 row_pixels[tone_marker] = COLOUR_TONE;
                 row_pixels[tone_marker + 1] = COLOUR_TONE;
-            }
-            for (unsigned i = 0; i < sizeof axis_labels / sizeof axis_labels[0]; ++i) {
-                if (glyph < 7) {
-                    put_text(axis_labels[i].band * BAND_PITCH, glyph,
-                             axis_labels[i].text);
-                }
             }
             if (glyph < 7) put_text(PANEL_W - 24, glyph, "kHz");
         } else if (y < tone_top) {

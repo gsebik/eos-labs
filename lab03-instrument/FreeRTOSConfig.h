@@ -17,7 +17,9 @@
 #define configMAX_SYSCALL_INTERRUPT_PRIORITY 16
 #define configNUMBER_OF_CORES 1
 #define configSUPPORT_DYNAMIC_ALLOCATION 1
-#define configSUPPORT_STATIC_ALLOCATION 0
+/* The instrument's ready-descriptor queue is statically allocated, so that a
+ * failed creation cannot be blamed on heap exhaustion. */
+#define configSUPPORT_STATIC_ALLOCATION 1
 #define configTOTAL_HEAP_SIZE (64 * 1024)
 #define configCHECK_FOR_STACK_OVERFLOW 2
 #define configUSE_MALLOC_FAILED_HOOK 1
@@ -43,7 +45,17 @@ uint32_t eos_runtime_counter(void);
 #define INCLUDE_vTaskSuspend 1
 #define INCLUDE_uxTaskPriorityGet 1
 #define INCLUDE_uxTaskGetStackHighWaterMark 1
+/* The task-number field is what the switch hook publishes on the marker pins,
+ * so that a logic analyzer can name the running task. */
+#define INCLUDE_uxTaskGetTaskNumber 1
+#define INCLUDE_vTaskSetTaskNumber 1
 #define configASSERT(x) do { if (!(x)) { \
     portDISABLE_INTERRUPTS(); for (;;) {} \
 } } while (0)
+#endif
+
+/* Task-switch marker hook. Included last so the scheduler types are resolved.
+ * Guarded because this configuration is also preprocessed for assembly. */
+#ifndef __ASSEMBLER__
+#include "task_marker.h"
 #endif

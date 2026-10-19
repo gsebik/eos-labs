@@ -5,6 +5,7 @@
 #include "capture.h"
 #include "panel.h"
 #include "trace.h"
+#include "task_marker.h"
 #if EOS_SIG_RTOS
 #include "FreeRTOS.h"
 #include "task.h"
@@ -29,9 +30,10 @@ static uint32_t threshold_q15 = 800, timebase_div = 4;
 static uint32_t level_q15, detections;
 static uint32_t processed, misses, largest_response, largest_compute;
 static uint32_t largest_draw, largest_settings_wait, largest_publish_wait;
+static uint32_t largest_publication;
 static volatile uint32_t g_fault;
 #if EOS_SIG_RTOS
-static TaskHandle_t dsp_handle, display_handle, ui_handle;
+static TaskHandle_t dsp_handle, display_handle, ui_handle, report_handle;
 static SemaphoreHandle_t settings_lock, result_lock;
 static void require_success(BaseType_t result)
 {
@@ -107,24 +109,33 @@ static bool process_one(void)
     settings_give();
 
     sig_block_t block;
-    if (!sig_capture_take(&block)) return false;
+    if (!sig_capture_receive(&block)) return false;
     gpio_put(MARK_WORK, 1);
     const uint64_t start = sig_trace(SIG_WORK_START, block.job, block.id, 0);
     sig_result_t result;
     sig_dsp_process(block.samples, EOS_DSP_REPEATS, &result);
     const uint64_t finish = sig_trace(SIG_WORK_COMPLETE, block.job, block.id, 0);
     const uint32_t compute = (uint32_t)(finish - start);
-    publish(&result, threshold);
+    /* The samples have been read for the last time, so the input buffer can
+     * return to the pool now. The private result does not refer to it, which is
+     * why publication is a separate, later obligation. */
     sig_capture_release(block.id);
     const uint64_t release = sig_trace(SIG_BLOCK_RELEASE, block.job, block.id, 0);
+
+    publish(&result, threshold);
+    const uint64_t published = sig_trace(SIG_RESULT_PUBLISHED, block.job, block.id, 0);
     gpio_put(MARK_WORK, 0);
 
     const uint32_t saved = save_and_disable_interrupts();
     processed++;
-    const uint32_t response = (uint32_t)(release - block.ready_us);
-    const bool late = response > EOS_DEADLINE_US;
+    const uint32_t buffer_return = (uint32_t)(release - block.ready_us);
+    const uint32_t publication = (uint32_t)(published - block.ready_us);
+    /* The deadline belongs to storage reuse: until this point DMA cannot use
+     * the buffer again. Publication is reported separately. */
+    const bool late = buffer_return > EOS_DEADLINE_US;
     if (late) misses++;
-    if (response > largest_response) largest_response = response;
+    if (buffer_return > largest_response) largest_response = buffer_return;
+    if (publication > largest_publication) largest_publication = publication;
     if (compute > largest_compute) largest_compute = compute;
     restore_interrupts(saved);
     /* Close the trace window at the first miss, so a dump shows the events that
@@ -133,25 +144,30 @@ static bool process_one(void)
     return true;
 }
 
-/* TODO (2), Task 3: retain the configured preparation workload and a consistent
- * settings update, but bound the work that readers must wait for. Diagnose the
- * longer-write run before editing this function. Do not delete the workload,
- * bypass settings_take/give, or change the threshold merely to pass a test. */
+/* The settings service: compute the next values privately, then publish them
+ * under the settings mutex. Ownership is deliberately brief, because a reader
+ * that needs these settings must never wait for unrelated work. */
 static void write_settings(void)
 {
+    const uint32_t timebase = 4 + (timebase_div % 8);
+    const uint32_t threshold = 800u + (timebase * 16u);
+
     settings_take();
     const uint64_t start = time_us_64();
-    timebase_div = 4 + (timebase_div % 8);
-    threshold_q15 = 800u + (timebase_div * 16u);
-    volatile uint32_t spin = 0;
-    for (uint32_t i = 0; i < EOS_SETTINGS_ITERS; ++i) spin += i;
+    timebase_div = timebase;
+    threshold_q15 = threshold;
     settings_give();
     sig_trace(SIG_SETTINGS_WRITE, 0, (uint32_t)(time_us_64() - start), 0);
 }
 
-/* [5] Display. ON preserves the supplied faulty comparison. OFF selects the
- * student implementation below, which initially has the SAME fault. The flag
- * selects a source path; it does not certify that the repair is correct. */
+/* [5] Display. Both paths perform the same physical redraw. They differ only in
+ * how long the shared spectrum is owned:
+ *
+ *   OFF (baseline) copies a consistent snapshot, releases the mutex, then draws.
+ *   ON  (comparison) holds the mutex across the redraw as well.
+ *
+ * The comparison exists to make ownership duration visible in the measurements.
+ * It is a controlled variation, not a defect waiting to be repaired. */
 static void draw(void)
 {
     gpio_put(MARK_DISPLAY, 1);
@@ -159,20 +175,17 @@ static void draw(void)
     const uint64_t start = sig_trace(SIG_DISPLAY_START, 0, EOS_DISPLAY_ROWS, 0);
     sig_result_t snapshot;
 #if EOS_LONG_RESULT_LOCK
-    /* The renderer owns the result lock for its whole redraw. This is the
-     * deliberately overlong critical section: it delays the DSP's publication. */
+    /* Comparison: shared ownership lasts as long as the physical transfer. */
     result_take();
     snapshot = latest;
     sig_panel_draw(&snapshot, EOS_DISPLAY_ROWS);
     result_give();
 #else
-    /* TODO (1), Task 1: display a consistent result without making publication
-     * wait for the physical redraw. Keep the same snapshot, renderer, workload
-     * and measurement boundaries. This compiles, but is not repaired yet. */
+    /* Baseline: the snapshot is consistent, and the transfer needs no lock. */
     result_take();
     snapshot = latest;
-    sig_panel_draw(&snapshot, EOS_DISPLAY_ROWS);
     result_give();
+    sig_panel_draw(&snapshot, EOS_DISPLAY_ROWS);
 #endif
     const uint64_t finish = sig_trace(SIG_DISPLAY_DONE, 0, 0, 0);
     const uint32_t elapsed = (uint32_t)(finish - start);
@@ -208,6 +221,7 @@ static void report(void)
     const uint32_t response = largest_response, compute = largest_compute;
     const uint32_t draw = largest_draw, settings_wait = largest_settings_wait;
     const uint32_t publish = largest_publish_wait;
+    const uint32_t publication = largest_publication;
     const uint32_t level = level_q15, hits = detections;
     const float checksum = latest.checksum;
     restore_interrupts(saved);
@@ -217,12 +231,14 @@ static void report(void)
            (unsigned long)capture.completed, (unsigned long)done,
            (unsigned long)capture.dropped, (unsigned long)capture.overruns,
            (unsigned long)EOS_DEADLINE_US, (unsigned long)lost);
-    printf("response_max_us=%lu compute_max_us=%lu draw_max_us=%lu "
+    printf("buffer_return_max_us=%lu publication_response_max_us=%lu "
+           "compute_max_us=%lu draw_max_us=%lu "
            "settings_wait_max_us=%lu publish_wait_max_us=%lu adc_hz=%lu "
            "spi_hz=%lu tone_hz=%lu rows=%u repeats=%u level=%lu detections=%lu "
            "trace=%lu/%lu/%lu "
            "checksum=%.6f\n",
-           (unsigned long)response, (unsigned long)compute,
+           (unsigned long)response, (unsigned long)publication,
+           (unsigned long)compute,
            (unsigned long)draw, (unsigned long)settings_wait,
            (unsigned long)publish, (unsigned long)sig_adc_hz(),
            (unsigned long)sig_panel_spi_hz(),
@@ -243,20 +259,13 @@ static void report(void)
 }
 
 #if EOS_SIG_RTOS
-/* [1] DMA completion. The interrupt hands a READY block to the DSP task; it
- * never takes a lock and never processes samples. */
-static void ready_isr(void)
-{
-    BaseType_t woken = pdFALSE;
-    vTaskNotifyGiveFromISR(dsp_handle, &woken);
-    portYIELD_FROM_ISR(woken);
-}
-
+/* [1] The completion interrupt delivers the descriptor through the FreeRTOS
+ * queue created by the capture component. Processing blocks in receive, so it
+ * needs no second wake-up object. */
 static void dsp_task(void *unused)
 {
     (void)unused;
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         while (process_one()) {}
     }
 }
@@ -291,6 +300,19 @@ static void report_task(void *unused)
         vTaskGetRunTimeStats(stats);
         printf("%s", stats);
     }
+}
+
+/* Static allocation is enabled for the ready-descriptor queue, so the kernel
+ * asks the application for the idle task's storage instead of using the heap. */
+static StaticTask_t idle_task_control;
+static StackType_t idle_task_stack[configMINIMAL_STACK_SIZE];
+
+void vApplicationGetIdleTaskMemory(StaticTask_t **control, StackType_t **stack,
+                                   configSTACK_DEPTH_TYPE *size)
+{
+    *control = &idle_task_control;
+    *stack = idle_task_stack;
+    *size = configMINIMAL_STACK_SIZE;
 }
 
 void vApplicationStackOverflowHook(TaskHandle_t task, char *name)
@@ -330,23 +352,40 @@ int main(void)
 #if EOS_SIG_RTOS
     result_lock = xSemaphoreCreateMutex();
     require_success(result_lock ? pdPASS : pdFAIL);
-    settings_lock = EOS_SIG_SETTINGS_MUTEX
-        ? xSemaphoreCreateMutex() : xSemaphoreCreateBinary();
+    /* A mutex, because settings have an owner that a reader may need to wait
+     * for; inheritance is what bounds that wait. */
+    settings_lock = xSemaphoreCreateMutex();
     require_success(settings_lock ? pdPASS : pdFAIL);
-    if (!EOS_SIG_SETTINGS_MUTEX) require_success(xSemaphoreGive(settings_lock));
     /* [6] Priorities. DSP is highest, display medium, UI lowest: the classic
      * three-task inversion layout for the settings lock. */
+    /* The marker pins are shared with the analyzer; the switch hook writes the
+     * running task's number to them. */
+    const unsigned marker_pins[] = { 16, 19, 20 };
+    for (unsigned i = 0; i < sizeof marker_pins / sizeof marker_pins[0]; ++i) {
+        gpio_init(marker_pins[i]);
+        gpio_set_dir(marker_pins[i], GPIO_OUT);
+    }
+    task_marker_publish(TASK_ID_IDLE);
+
     require_success(xTaskCreate(dsp_task, "dsp", 2048, NULL, 3, &dsp_handle));
     require_success(xTaskCreate(display_task, "display", 1024, NULL, 2,
                                 &display_handle));
     require_success(xTaskCreate(ui_task, "ui", 512, NULL, 1, &ui_handle));
-    require_success(xTaskCreate(report_task, "report", 1024, NULL, 1, NULL));
-    sig_capture_start(ready_isr);
+    require_success(xTaskCreate(report_task, "report", 1024, NULL, 1,
+                                &report_handle));
+
+    /* Numbers are what the marker pins and the report use to identify a task;
+     * the idle task keeps number 0. */
+    vTaskSetTaskNumber(dsp_handle, TASK_ID_DSP);
+    vTaskSetTaskNumber(display_handle, TASK_ID_DISPLAY);
+    vTaskSetTaskNumber(ui_handle, TASK_ID_UI);
+    vTaskSetTaskNumber(report_handle, TASK_ID_REPORT);
+    sig_capture_start();
     vTaskStartScheduler();
     g_fault = 3;
     for (;;) {}
 #else
-    sig_capture_start(NULL);
+    sig_capture_start();
     uint64_t display_due = time_us_64() + EOS_DISPLAY_PERIOD_MS * 1000ull;
     uint64_t ui_due = time_us_64() + EOS_UI_PERIOD_MS * 1000ull;
     uint64_t report_due = time_us_64() + 1000000ull;

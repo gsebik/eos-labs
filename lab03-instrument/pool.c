@@ -42,3 +42,18 @@ bool kit_pool_release(kit_pool_t *pool, unsigned id)
     pool->state[id] = KIT_FREE;
     return true;
 }
+
+bool kit_pool_ready(kit_pool_t *pool, unsigned id)
+{
+    if (id >= KIT_POOL_SIZE || pool->state[id] != KIT_DMA) return false;
+    pool->state[id] = KIT_READY;
+    pool->count++;
+    return true;
+}
+bool kit_pool_begin(kit_pool_t *pool, unsigned id)
+{
+    if (id >= KIT_POOL_SIZE || pool->state[id] != KIT_READY) return false;
+    pool->state[id] = KIT_PROCESSING;
+    pool->count--;
+    return true;
+}

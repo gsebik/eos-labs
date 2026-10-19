@@ -8,17 +8,31 @@
 #include "hardware/irq.h"
 #include "hardware/pwm.h"
 #include "hardware/sync.h"
+#if EOS_SIG_RTOS
+#include "FreeRTOS.h"
+#include "queue.h"
+#include "task.h"
+#endif
 
 static int32_t buffers[SIG_POOL][SIG_BLOCK];
 static int32_t discard[SIG_BLOCK];
 static kit_pool_t pool;
 static int active = -1, channel;
-static uint32_t jobs[SIG_POOL];
-static uint64_t ready_time[SIG_POOL];
 static uint32_t adc_rate;
 static sig_capture_stats_t stats;
-static void (*notify_ready)(void);
 _Static_assert(SIG_POOL == KIT_POOL_SIZE, "Pool capacity must match storage");
+
+#if EOS_SIG_RTOS
+/* Statically allocated so creation cannot fail for want of heap. Three entries
+ * match the pool: every descriptor in the queue corresponds to a READY buffer. */
+static uint8_t queue_storage[SIG_POOL * sizeof(sig_block_t)];
+static StaticQueue_t queue_control;
+static QueueHandle_t ready_blocks;
+#else
+/* The foreground target keeps a small ring; it has no blocking receiver. */
+static uint32_t jobs[SIG_POOL];
+static uint64_t ready_time[SIG_POOL];
+#endif
 
 static void start_next(void)
 {
@@ -36,11 +50,33 @@ static void dma_done(void)
     stats.completed++;
     const int done = active;
     if (done >= 0) {
-        const bool queued = kit_pool_complete(&pool, (unsigned)done);
+        const unsigned id = (unsigned)done;
+        const uint32_t job = stats.completed;
+        const uint64_t ready = sig_trace(SIG_BLOCK_READY, job, id, 0);
+#if EOS_SIG_RTOS
+        /* The descriptor is copied into the queue; the 256 samples stay in the
+         * pool. A failed send must not leave the buffer unreachable, so it is
+         * reclaimed here and counted as a rejection, not as a free-buffer drop. */
+        if (!kit_pool_ready(&pool, id)) {
+            stats.dropped++;
+            sig_trace(SIG_DROP, job, id, 0);
+        } else {
+            const sig_block_t block = { buffers[id], id, job, ready };
+            BaseType_t woken = pdFALSE;
+            if (xQueueSendFromISR(ready_blocks, &block, &woken) != pdPASS) {
+                kit_pool_begin(&pool, id);
+                kit_pool_release(&pool, id);
+                stats.queue_rejected++;
+                sig_trace(SIG_DROP, job, id, 0);
+            }
+            portYIELD_FROM_ISR(woken);
+        }
+#else
+        const bool queued = kit_pool_complete(&pool, id);
         hard_assert(queued);
-        jobs[done] = stats.completed;
-        ready_time[done] = sig_trace(SIG_BLOCK_READY, stats.completed,
-                                     (uint32_t)done, 0);
+        jobs[id] = job;
+        ready_time[id] = ready;
+#endif
     } else {
         stats.dropped++;
         sig_trace(SIG_DROP, stats.completed, 0, 0);
@@ -53,7 +89,6 @@ static void dma_done(void)
         hw_set_bits(&adc_hw->fcs, ADC_FCS_OVER_BITS);
     }
     start_next();
-    if (done >= 0 && notify_ready) notify_ready();
     gpio_put(SIG_ISR_MARK_PIN, 0);
 }
 
@@ -97,11 +132,15 @@ uint32_t sig_signal_hz(void) { return tone_hz; }
 
 uint32_t sig_adc_hz(void) { return adc_rate; }
 
-void sig_capture_start(void (*ready_from_isr)(void))
+void sig_capture_start(void)
 {
     hard_assert(get_core_num() == 0);
     kit_pool_init(&pool);
-    notify_ready = ready_from_isr;
+#if EOS_SIG_RTOS
+    ready_blocks = xQueueCreateStatic(SIG_POOL, sizeof(sig_block_t),
+                                      queue_storage, &queue_control);
+    hard_assert(ready_blocks != NULL);
+#endif
 
     adc_init();
     adc_gpio_init(SIG_ADC_PIN);
@@ -131,8 +170,18 @@ void sig_capture_start(void (*ready_from_isr)(void))
     adc_run(true);
 }
 
-bool sig_capture_take(sig_block_t *block)
+bool sig_capture_receive(sig_block_t *block)
 {
+#if EOS_SIG_RTOS
+    /* Block until a descriptor arrives. The task is woken by the queue, so no
+     * separate notification object is needed for this handoff. */
+    if (xQueueReceive(ready_blocks, block, portMAX_DELAY) != pdPASS) return false;
+    const uint32_t saved = save_and_disable_interrupts();
+    const bool begun = kit_pool_begin(&pool, block->id);
+    restore_interrupts(saved);
+    hard_assert(begun);
+    return true;
+#else
     const uint32_t saved = save_and_disable_interrupts();
     const int taken = kit_pool_take(&pool);
     hard_assert(taken != -2);
@@ -144,6 +193,7 @@ bool sig_capture_take(sig_block_t *block)
     *block = (sig_block_t){ buffers[id], id, jobs[id], ready_time[id] };
     restore_interrupts(saved);
     return true;
+#endif
 }
 
 void sig_capture_release(uint32_t id)
