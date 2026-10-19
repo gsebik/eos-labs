@@ -140,9 +140,20 @@ def capture(port, channels, frequency, samples, trigger_channel, timeout=30.0):
     return words, mode
 
 
-def pulse_stats(words, channel, dt_us):
-    """High-pulse widths and rise-to-rise periods for one channel, in us."""
-    bits = [(word >> channel) & 1 for word in words]
+def bit_map(channels):
+    """Bit position of each requested GPIO inside a returned sample.
+
+    The analyzer packs the requested channels in the order they were asked for,
+    not by channel index. Verified on the station: requesting GP16..GP21 places
+    the active signals in bits 1..5, and requesting the same pins in reverse moves
+    them to bits 0..4. Decoding by channel index therefore reads the wrong pins.
+    """
+    return {gpio: position for position, gpio in enumerate(channels)}
+
+
+def pulse_stats(words, bit, dt_us):
+    """High-pulse widths and rise-to-rise periods for one bit position, in us."""
+    bits = [(word >> bit) & 1 for word in words]
     widths, periods, last_rise, first_rise = [], [], None, None
     start = None
     for index, bit in enumerate(bits):
@@ -159,20 +170,20 @@ def pulse_stats(words, channel, dt_us):
     return widths, periods
 
 
-def task_id_at(word):
+def task_id_at(word, bits):
     """Task number carried by the marker pins in one sample."""
     value = 0
-    for bit, pin in enumerate(TASK_PINS):
-        value |= ((word >> channel_of(pin)) & 1) << bit
+    for index, pin in enumerate(TASK_PINS):
+        value |= ((word >> bits[pin]) & 1) << index
     return value
 
 
-def task_runs(words, dt_us):
+def task_runs(words, dt_us, bits):
     """Contiguous intervals in which one task was running, from the pins."""
     runs = []
     current, start = None, 0
     for index, word in enumerate(words):
-        value = task_id_at(word)
+        value = task_id_at(word, bits)
         if value != current:
             if current is not None:
                 runs.append((TASK_NAMES.get(current, f'task{current}'),
@@ -202,13 +213,14 @@ def write_vcd(path, words, dt_us, channels):
     The three marker pins appear both individually and as the decoded task bus.
     """
     names = list(channels)
+    bits = bit_map(channels)
     lines = ['$timescale 1us $end', '$scope module logic $end']
     for gpio in names:
         lines.append(f'$var wire 1 c{gpio} gp{gpio} $end')
     lines.append('$upscope $end', '$enddefinitions $end')
     previous = None
     for index, word in enumerate(words):
-        values = {gpio: (word >> channel_of(gpio)) & 1 for gpio in names}
+        values = {gpio: (word >> bits[gpio]) & 1 for gpio in names}
         if values == previous:
             continue
         lines.append(f'#{index}')
@@ -219,9 +231,10 @@ def write_vcd(path, words, dt_us, channels):
 
 def summarize(words, channels, frequency):
     dt_us = 1_000_000.0 / frequency
+    bits = bit_map(channels)
     out = {}
     for gpio in channels:
-        widths, periods = pulse_stats(words, channel_of(gpio), dt_us)
+        widths, periods = pulse_stats(words, bits[gpio], dt_us)
         name = MARKERS.get(gpio, f'gp{gpio}')
         entry = {'gpio': gpio, 'pulses': len(widths)}
         if widths:
@@ -313,7 +326,7 @@ def main():
                 print(f"  {name:<9} GP{entry['gpio']:<3} no pulses in this window")
         if args.tasks:
             dt_us = 1_000_000.0 / args.rate
-            runs = task_runs(words, dt_us)
+            runs = task_runs(words, dt_us, bit_map(channels))
             print('  running-task share of this window (decoded from the pins):')
             for name, entry in task_summary(runs).items():
                 print(f"    {name:<10} {entry['total_us']:>9.1f} us  "
