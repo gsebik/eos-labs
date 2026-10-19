@@ -3,10 +3,13 @@
 #include "workload.h"
 
 enum { SIG_TRACE_CAPACITY = 2048 };
+/* Lifecycle events 1-4 belong to one input buffer. Event 11 closes the separate
+ * publication obligation and is deliberately not part of buffer ownership.
+ * Events 5-10 are the supporting observations. */
 enum {
     SIG_BLOCK_READY = 1, SIG_WORK_START, SIG_WORK_COMPLETE, SIG_BLOCK_RELEASE,
     SIG_DROP, SIG_DISPLAY_START, SIG_DISPLAY_DONE, SIG_SETTINGS_WRITE,
-    SIG_SETTINGS_WAIT, SIG_PUBLISH_WAIT
+    SIG_SETTINGS_WAIT, SIG_PUBLISH_WAIT, SIG_RESULT_PUBLISHED
 };
 
 typedef struct {
