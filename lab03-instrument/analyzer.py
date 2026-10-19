@@ -33,7 +33,14 @@ LA_FRAME_END = bytes([0xAA, 0x55])
 LA_ESC = 0xF0
 
 # Marker GPIO to friendly name, matching the firmware's report.
-MARKERS = {16: 'heartbeat', 17: 'display', 18: 'isr', 21: 'work'}
+MARKERS = {16: 'task_bit2', 17: 'display', 18: 'isr', 19: 'task_bit0',
+           20: 'task_bit1', 21: 'work'}
+# The firmware's switch hook publishes the running task's number on three pins,
+# so this capture can name the task that was running instead of only measuring
+# pulse widths. Bit order matches task_marker.h.
+TASK_PINS = (19, 20, 16)
+TASK_NAMES = {0: 'idle', 1: 'dsp', 2: 'display', 3: 'ui', 4: 'report',
+              5: 'controller'}
 DEFAULT_CHANNELS = [17, 18, 21]
 # The analyzer caps samples by channel width: 8-bit 131072, 16-bit 65536,
 # 24-bit 32768 (LogicAnalyzer.pio startCaptureSimple). A request above the cap
@@ -152,6 +159,64 @@ def pulse_stats(words, channel, dt_us):
     return widths, periods
 
 
+def task_id_at(word):
+    """Task number carried by the marker pins in one sample."""
+    value = 0
+    for bit, pin in enumerate(TASK_PINS):
+        value |= ((word >> channel_of(pin)) & 1) << bit
+    return value
+
+
+def task_runs(words, dt_us):
+    """Contiguous intervals in which one task was running, from the pins."""
+    runs = []
+    current, start = None, 0
+    for index, word in enumerate(words):
+        value = task_id_at(word)
+        if value != current:
+            if current is not None:
+                runs.append((TASK_NAMES.get(current, f'task{current}'),
+                             start * dt_us, index * dt_us))
+            current, start = value, index
+    if current is not None:
+        runs.append((TASK_NAMES.get(current, f'task{current}'),
+                     start * dt_us, len(words) * dt_us))
+    return runs
+
+
+def task_summary(runs):
+    """Total run time and share of the window for each task."""
+    totals = {}
+    for name, start, end in runs:
+        totals[name] = totals.get(name, 0.0) + (end - start)
+    window = runs[-1][2] if runs else 0.0
+    return {name: {'total_us': round(total, 2),
+                   'percent': round(100.0 * total / window, 1) if window else 0.0}
+            for name, total in sorted(totals.items(), key=lambda kv: -kv[1])}
+
+
+def write_vcd(path, words, dt_us, channels):
+    """Export the capture as VCD, so PulseView or GTKWave can view the schedule.
+
+    Timestamps are microseconds, matching the sample interval of this capture.
+    The three marker pins appear both individually and as the decoded task bus.
+    """
+    names = list(channels)
+    lines = ['$timescale 1us $end', '$scope module logic $end']
+    for gpio in names:
+        lines.append(f'$var wire 1 c{gpio} gp{gpio} $end')
+    lines.append('$upscope $end', '$enddefinitions $end')
+    previous = None
+    for index, word in enumerate(words):
+        values = {gpio: (word >> channel_of(gpio)) & 1 for gpio in names}
+        if values == previous:
+            continue
+        lines.append(f'#{index}')
+        lines += [f'{bit}c{gpio}' for gpio, bit in values.items()]
+        previous = values
+    Path(path).write_text('\n'.join(lines) + '\n')
+
+
 def summarize(words, channels, frequency):
     dt_us = 1_000_000.0 / frequency
     out = {}
@@ -185,9 +250,14 @@ def main():
     parser.add_argument('--samples', type=int, default=32768,
                         help='samples to capture (default 32768, the 24-bit cap)')
     parser.add_argument('--port', default=None, help='override the analyzer port')
-    parser.add_argument('--trigger', type=int, default=16,
+    parser.add_argument('--trigger', type=int, default=17,
                         help='GPIO whose rising edge starts the capture '
-                             '(default 16, the heartbeat)')
+                             '(default 17, the display marker)')
+    parser.add_argument('--tasks', action='store_true',
+                        help='also decode the running-task marker pins '
+                             '(GP19, GP20, GP16) and summarize each task share')
+    parser.add_argument('--vcd', default=None,
+                        help='write the capture as a VCD file for PulseView/GTKWave')
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
 
@@ -204,6 +274,11 @@ def main():
             channel_of(gpio)
     except ValueError as error:
         parser.error(str(error))
+
+    if args.tasks:
+        for pin in TASK_PINS:
+            if pin not in channels:
+                channels.append(pin)
 
     port_path = args.port or find_la_port()
     if not port_path:
@@ -236,8 +311,19 @@ def main():
                       f"(min/median/max)")
             else:
                 print(f"  {name:<9} GP{entry['gpio']:<3} no pulses in this window")
+        if args.tasks:
+            dt_us = 1_000_000.0 / args.rate
+            runs = task_runs(words, dt_us)
+            print('  running-task share of this window (decoded from the pins):')
+            for name, entry in task_summary(runs).items():
+                print(f"    {name:<10} {entry['total_us']:>9.1f} us  "
+                      f"{entry['percent']:>5.1f}%")
+            print(f"    {len(runs)} task switches in this window")
         print('Pin measurement only: one recorded window, not the trace and not '
               'a worst case.')
+    if args.vcd:
+        write_vcd(args.vcd, words, 1_000_000.0 / args.rate, channels)
+        print(f'wrote {args.vcd}')
     return 0
 
 
