@@ -1,3 +1,17 @@
+/* ADC + DMA capture: implementation.
+ *
+ * The public contracts are documented in capture.h; this file explains how the
+ * hardware is driven. In one round:
+ *
+ *   1. start_next() claims a FREE buffer and points the DMA at it;
+ *   2. the DMA fills 256 samples and raises its completion interrupt;
+ *   3. dma_done() records the block as READY, delivers its descriptor and
+ *      immediately arms the next transfer;
+ *   4. the processing task takes the descriptor, reads the samples and returns
+ *      the buffer with sig_capture_release().
+ *
+ * The interrupt does the minimum: no allocation, no printing, no waiting.
+ */
 #include "capture.h"
 #include "pool.h"
 #include "trace.h"
@@ -14,6 +28,9 @@
 #include "task.h"
 #endif
 
+/* Pool storage. `discard` is where the DMA writes when every buffer is in use:
+ * the samples are dropped on purpose, so a reader's buffer is never
+ * overwritten by a later transfer. */
 static int32_t buffers[SIG_POOL][SIG_BLOCK];
 static int32_t discard[SIG_BLOCK];
 static kit_pool_t pool;
@@ -24,7 +41,7 @@ _Static_assert(SIG_POOL == KIT_POOL_SIZE, "Pool capacity must match storage");
 
 #if EOS_SIG_RTOS
 /* Statically allocated so creation cannot fail for want of heap. Three entries
- * match the pool: every descriptor in the queue corresponds to a READY buffer. */
+ * match the pool: every queued descriptor corresponds to one READY buffer. */
 static uint8_t queue_storage[SIG_POOL * sizeof(sample_block_t)];
 static StaticQueue_t queue_control;
 static QueueHandle_t ready_blocks;
@@ -34,6 +51,8 @@ static uint32_t jobs[SIG_POOL];
 static uint64_t ready_time[SIG_POOL];
 #endif
 
+/* Arm the next transfer: claim a FREE buffer, or fall back to discard storage
+ * so acquisition continues (and the loss is counted) when none is available. */
 static void start_next(void)
 {
     active = kit_pool_dma(&pool);
@@ -42,6 +61,15 @@ static void start_next(void)
     dma_channel_set_trans_count(channel, SIG_BLOCK, true);
 }
 
+/* DMA completion interrupt: close out the block that just finished, then arm
+ * the next one.
+ *
+ * The order in the interrupt matters. The buffer becomes READY and its
+ * descriptor is queued before start_next() re-arms the DMA, so a woken reader
+ * can never be handed storage that is already the next destination. If the
+ * descriptor cannot be queued the buffer is reclaimed instead of leaked, and
+ * the failure is counted separately from a storage shortage.
+ */
 static void dma_done(void)
 {
     if (!dma_channel_get_irq0_status(channel)) return;
@@ -93,12 +121,19 @@ static void dma_done(void)
 }
 
 /* Bin-aligned test tones. The divider stays at 1, so the wrap must be an
- * integer that fits the 16-bit counter: wrap + 1 = clk / (bin * rate / block). */
+ * integer that fits the 16-bit counter: wrap + 1 = clk / (bin * rate / block).
+ * Choosing bins as multiples of four keeps each tone inside one displayed
+ * band, which is what makes the picture stable to read. */
 static const uint16_t tone_bins[] = {12, 16, 20, 24, 32, 40, 48, 64, 80, 96};
 static uint tone_slice;
 static unsigned tone_index;
 static uint32_t tone_hz;
 
+/* Program the PWM slice for one bin, as a 50 % duty square wave.
+ *
+ * Returns without changing anything if the wrap value would not fit the
+ * counter, so a bad table entry cannot leave the generator at the wrong
+ * frequency. */
 static void apply_tone(uint16_t bin)
 {
     const uint32_t per_block = clock_get_hz(clk_sys) / SIG_RATE_HZ * SIG_BLOCK;
@@ -128,7 +163,6 @@ void sig_signal_step(int direction)
 }
 
 uint32_t sig_signal_hz(void) { return tone_hz; }
-
 
 uint32_t sig_adc_hz(void) { return adc_rate; }
 

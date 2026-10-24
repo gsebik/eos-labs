@@ -63,6 +63,9 @@ static volatile unsigned observation_count;
 static volatile uint32_t l_highest_priority;
 static volatile uint64_t interval_start;
 
+/* Append one observation, timed from the moment the interval opened.
+ * Silently drops the entry when the array is full, so recording can never
+ * change the schedule it is observing. */
 static void record(const char *task, const char *event, uint32_t priority)
 {
     if (observation_count >= sizeof observations / sizeof observations[0]) return;
@@ -74,13 +77,15 @@ static void record(const char *task, const char *event, uint32_t priority)
     observation_count++;
 }
 
-/* Bounded synthetic CPU work: the task is genuinely busy, not sleeping. */
+/* Bounded synthetic CPU work: the task is genuinely busy, not sleeping, so the
+ * priorities are what decide who runs. @param microseconds busy duration. */
 static void spin_us(uint32_t microseconds)
 {
     const uint64_t until = time_us_64() + microseconds;
     while (time_us_64() < until) tight_loop_contents();
 }
 
+/* H: request the resource L owns, use it, then wake the controller. */
 static void high_task(void *unused)
 {
     (void)unused;
@@ -97,6 +102,8 @@ static void high_task(void *unused)
     vTaskSuspend(NULL);
 }
 
+/* M: unrelated work at a priority between H and L. With a plain semaphore this
+ * is what postpones L's release; with an inheritance mutex it cannot. */
 static void medium_task(void *unused)
 {
     (void)unused;
@@ -107,6 +114,8 @@ static void medium_task(void *unused)
     vTaskSuspend(NULL);
 }
 
+/* L: own the resource first, then finish the protected work in slices while
+ * sampling the priority the kernel actually gives it. */
 static void low_task(void *unused)
 {
     (void)unused;
@@ -168,6 +177,8 @@ void vApplicationGetIdleTaskMemory(StaticTask_t **control, StackType_t **stack,
     *size = configMINIMAL_STACK_SIZE;
 }
 
+/* Print the configuration, the recorded events and the two derived numbers:
+ * L's highest observed priority, and H's request-to-completion response. */
 static void report(void)
 {
     printf("inheritance demo: resource=%s H=%d M=%d L=%d work_us=%u/%u/%u\n",
@@ -214,6 +225,8 @@ static void controller_task(void *unused)
     for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
+/* Create the tasks in an order that fixes the initial state — L owns the
+ * resource before the gate opens — then hand control to the scheduler. */
 int main(void)
 {
     stdio_init_all();

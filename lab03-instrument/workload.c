@@ -1,3 +1,12 @@
+/* Frequency-band calculation and the adjustable load: implementation.
+ *
+ * The transform is a prepared radix-2 FFT over a Hann-windowed block. Band
+ * strengths are log-scaled powers, which is why the display maps a band value
+ * of about 8 to a nearly full-height bar. The `repeats` loop afterwards is
+ * deliberate synthetic CPU demand: it reads the already-computed bands and
+ * mixes them through fixed random weights, so it costs time without changing
+ * what the instrument displays.
+ */
 #include "workload.h"
 #include <math.h>
 #include <string.h>
@@ -7,6 +16,8 @@ static float hann[SIG_SAMPLES];
 static float weights[8][SIG_SAMPLES];
 static float state[16];
 
+/* Build the Hann window once, then the fixed weight table. Both are constants
+ * of the experiment, so nothing here depends on the signal. */
 void sig_dsp_init(void)
 {
     for (unsigned i = 0; i < SIG_SAMPLES; ++i) {
@@ -24,7 +35,12 @@ void sig_dsp_init(void)
     memset(state, 0, sizeof state);
 }
 
-/* In-place radix-2 FFT; prepared DSP, not a student implementation task. */
+/* In-place radix-2 FFT over real_part/imag_part.
+ *
+ * The bit-reversal pass permutes only the real half, which is valid because the
+ * imaginary array is cleared before the transform. Supplied code: the lab
+ * measures this work, it does not ask you to write it.
+ */
 static void fft(void)
 {
     for (unsigned i = 1, j = 0; i < SIG_SAMPLES; ++i) {
@@ -58,6 +74,12 @@ static void fft(void)
     }
 }
 
+/* Centre and window the block, transform it, then reduce 4 bins per band.
+ *
+ * `peak_bin` and `checksum` are diagnostics: the first says where the energy
+ * is, the second changes when the data changes, so a capture can show that both
+ * the signal path and the arithmetic are live.
+ */
 void sig_dsp_process(const int32_t samples[SIG_SAMPLES], unsigned repeats,
                      spectrum_result_t *result)
 {
