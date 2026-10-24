@@ -7,7 +7,7 @@ typedef struct {
     float rms;
     float checksum;
     unsigned peak_bin;
-} sig_result_t;
+} spectrum_result_t;
 
 /* Block processing: window, FFT, band energies, then a bounded amount of
  * additional arithmetic whose size is set by `repeats`. The extra arithmetic
@@ -16,4 +16,4 @@ typedef struct {
  * not a measurement of a physical signal. */
 void sig_dsp_init(void);
 void sig_dsp_process(const int32_t samples[SIG_SAMPLES], unsigned repeats,
-                     sig_result_t *result);
+                     spectrum_result_t *result);

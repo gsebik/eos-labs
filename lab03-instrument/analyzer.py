@@ -34,13 +34,13 @@ LA_ESC = 0xF0
 
 # Marker GPIO to friendly name, matching the firmware's report.
 MARKERS = {16: 'task_bit2', 17: 'display', 18: 'isr', 19: 'task_bit0',
-           20: 'task_bit1', 21: 'work'}
+           20: 'task_bit1', 21: 'processing'}
 # The firmware's switch hook publishes the running task's number on three pins,
 # so this capture can name the task that was running instead of only measuring
 # pulse widths. Bit order matches task_marker.h.
 TASK_PINS = (19, 20, 16)
-TASK_NAMES = {0: 'idle', 1: 'dsp', 2: 'display', 3: 'ui', 4: 'report',
-              5: 'controller'}
+TASK_NAMES = {0: 'idle', 1: 'processing', 2: 'display', 3: 'settings',
+              4: 'reporting', 5: 'controller'}
 DEFAULT_CHANNELS = [17, 18, 21]
 # The analyzer caps samples by channel width: 8-bit 131072, 16-bit 65536,
 # 24-bit 32768 (LogicAnalyzer.pio startCaptureSimple). A request above the cap

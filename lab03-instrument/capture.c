@@ -25,7 +25,7 @@ _Static_assert(SIG_POOL == KIT_POOL_SIZE, "Pool capacity must match storage");
 #if EOS_SIG_RTOS
 /* Statically allocated so creation cannot fail for want of heap. Three entries
  * match the pool: every descriptor in the queue corresponds to a READY buffer. */
-static uint8_t queue_storage[SIG_POOL * sizeof(sig_block_t)];
+static uint8_t queue_storage[SIG_POOL * sizeof(sample_block_t)];
 static StaticQueue_t queue_control;
 static QueueHandle_t ready_blocks;
 #else
@@ -61,7 +61,7 @@ static void dma_done(void)
             stats.dropped++;
             sig_trace(SIG_DROP, job, id, 0);
         } else {
-            const sig_block_t block = { buffers[id], id, job, ready };
+            const sample_block_t block = { buffers[id], id, job, ready };
             BaseType_t woken = pdFALSE;
             if (xQueueSendFromISR(ready_blocks, &block, &woken) != pdPASS) {
                 kit_pool_begin(&pool, id);
@@ -137,7 +137,7 @@ void sig_capture_start(void)
     hard_assert(get_core_num() == 0);
     kit_pool_init(&pool);
 #if EOS_SIG_RTOS
-    ready_blocks = xQueueCreateStatic(SIG_POOL, sizeof(sig_block_t),
+    ready_blocks = xQueueCreateStatic(SIG_POOL, sizeof(sample_block_t),
                                       queue_storage, &queue_control);
     hard_assert(ready_blocks != NULL);
 #endif
@@ -170,7 +170,7 @@ void sig_capture_start(void)
     adc_run(true);
 }
 
-bool sig_capture_receive(sig_block_t *block)
+bool sig_capture_receive(sample_block_t *block)
 {
 #if EOS_SIG_RTOS
     /* Block until a descriptor arrives. The task is woken by the queue, so no
@@ -190,7 +190,7 @@ bool sig_capture_receive(sig_block_t *block)
         return false;
     }
     const unsigned id = (unsigned)taken;
-    *block = (sig_block_t){ buffers[id], id, jobs[id], ready_time[id] };
+    *block = (sample_block_t){ buffers[id], id, jobs[id], ready_time[id] };
     restore_interrupts(saved);
     return true;
 #endif

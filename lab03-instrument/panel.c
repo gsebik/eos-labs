@@ -282,7 +282,7 @@ static unsigned bar_pixels(float level, unsigned rows)
 void sig_panel_set_tone(uint32_t hz) { tone_hz = hz; }
 
 /* Draw one complete frame. `rows` is the tallest bar (EOS_DISPLAY_ROWS). */
-void sig_panel_draw(const sig_result_t *result, unsigned rows)
+void sig_panel_draw(const spectrum_result_t *result, unsigned rows)
 {
     if (rows > PLOT_MAX) rows = PLOT_MAX;
     for (unsigned band = 0; band < SIG_BANDS; ++band) {
