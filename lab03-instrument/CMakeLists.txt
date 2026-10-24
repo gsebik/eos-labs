@@ -11,36 +11,43 @@ endif()
 if(NOT EXISTS "${_port}")
     message(FATAL_ERROR "Set FREERTOS_KERNEL_PATH to V11.3.1 with its RP2350 port")
 endif()
+# Which kernel is actually linked, not merely which environment variable is set:
+# picolab may source its own environment file, so the two can differ. The value
+# is compiled in and printed in the first status line, so a student can check the
+# running image rather than a cache file.
+file(STRINGS "${FREERTOS_KERNEL_PATH}/include/task.h" _kernel_version_line
+     REGEX "^#define[ \t]+tskKERNEL_VERSION_NUMBER")
+string(REGEX REPLACE ".*\"([^\"]+)\".*" "\\1" EOS_KERNEL_VERSION
+       "${_kernel_version_line}")
+if(NOT EOS_KERNEL_VERSION)
+    message(FATAL_ERROR "Cannot read tskKERNEL_VERSION_NUMBER from ${FREERTOS_KERNEL_PATH}/include/task.h")
+endif()
+message(STATUS "FreeRTOS kernel: ${EOS_KERNEL_VERSION} from ${FREERTOS_KERNEL_PATH}")
 project(eos_lab03_instrument C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 pico_sdk_init()
 include(${_port})
 
-option(EOS_SIG_SETTINGS_MUTEX "LEGACY, unused: settings are always a mutex" ON)
 option(EOS_INHERITANCE_MUTEX "Use an inheritance mutex in the priority-inheritance demo" ON)
-option(EOS_LONG_RESULT_LOCK "ON: hold the spectrum mutex across the redraw (comparison)" OFF)
 set(EOS_DEADLINE_US 10240 CACHE STRING "Block ready-to-release deadline in microseconds")
 set(EOS_DSP_REPEATS 4 CACHE STRING "Extra block-processing repeats")
 set(EOS_DISPLAY_ROWS 40 CACHE STRING "Plot height and per-band pixel-transfer budget")
 set(EOS_DISPLAY_PERIOD_MS 100 CACHE STRING "Display redraw period")
 set(EOS_UI_PERIOD_MS 20 CACHE STRING "Settings update period")
-set(EOS_SETTINGS_ITERS 2000 CACHE STRING "LEGACY, unused: no artificial settings workload")
 # This literal list is also the picolab build-knob discovery interface. It must
 # stay on ONE line: picolab discovers the option names with a line-based search,
 # so a wrapped list makes it warn that valid options are typos.
-foreach(opt EOS_DEADLINE_US EOS_DSP_REPEATS EOS_DISPLAY_ROWS EOS_DISPLAY_PERIOD_MS EOS_UI_PERIOD_MS EOS_SETTINGS_ITERS)
+foreach(opt EOS_DEADLINE_US EOS_DSP_REPEATS EOS_DISPLAY_ROWS EOS_DISPLAY_PERIOD_MS EOS_UI_PERIOD_MS)
     if(NOT "${${opt}}" MATCHES "^[1-9][0-9]*$")
         message(FATAL_ERROR "${opt} must be a positive integer")
     endif()
 endforeach()
 if(EOS_DEADLINE_US GREATER 1000000 OR EOS_DSP_REPEATS GREATER 64
    OR EOS_DISPLAY_ROWS GREATER 480 OR EOS_DISPLAY_PERIOD_MS GREATER 10000
-   OR EOS_UI_PERIOD_MS GREATER 10000 OR EOS_SETTINGS_ITERS GREATER 3000000)
+   OR EOS_UI_PERIOD_MS GREATER 10000)
     message(FATAL_ERROR "One or more experiment settings exceed their limit")
 endif()
-foreach(opt EOS_SIG_SETTINGS_MUTEX EOS_LONG_RESULT_LOCK EOS_INHERITANCE_MUTEX)
-    message(STATUS "${opt}=${${opt}}")
-endforeach()
+message(STATUS "EOS_INHERITANCE_MUTEX=${EOS_INHERITANCE_MUTEX}")
 
 set(SIG_MAIN_SOURCE "${CMAKE_CURRENT_LIST_DIR}/main.c"
     CACHE FILEPATH "Student or private reference source")
@@ -51,14 +58,12 @@ foreach(target lab03_instrument_rtos lab03_instrument_foreground)
     target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
     target_compile_definitions(${target} PRIVATE
         EOS_SIG_RTOS=$<STREQUAL:${target},lab03_instrument_rtos>
-        EOS_SIG_SETTINGS_MUTEX=$<BOOL:${EOS_SIG_SETTINGS_MUTEX}>
-        EOS_LONG_RESULT_LOCK=$<BOOL:${EOS_LONG_RESULT_LOCK}>
+        EOS_KERNEL_VERSION="${EOS_KERNEL_VERSION}"
         EOS_DEADLINE_US=${EOS_DEADLINE_US}
         EOS_DSP_REPEATS=${EOS_DSP_REPEATS}
         EOS_DISPLAY_ROWS=${EOS_DISPLAY_ROWS}
         EOS_DISPLAY_PERIOD_MS=${EOS_DISPLAY_PERIOD_MS}
-        EOS_UI_PERIOD_MS=${EOS_UI_PERIOD_MS}
-        EOS_SETTINGS_ITERS=${EOS_SETTINGS_ITERS})
+        EOS_UI_PERIOD_MS=${EOS_UI_PERIOD_MS})
     target_link_libraries(${target} pico_stdlib hardware_adc hardware_dma
         hardware_pwm hardware_spi hardware_clocks m)
     if(target STREQUAL "lab03_instrument_rtos")

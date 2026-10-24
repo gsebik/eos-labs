@@ -16,7 +16,8 @@ cd eos-labs/lab03-instrument
 
 The 50 kS/s instrument samples GP28, fed by the selectable GP22 square-wave
 output through a jumper, computes a 256-point FFT and displays frequency bands.
-See the lab manual for wiring, configuration, TODO contracts and evidence.
+See the lab manual for wiring, configuration, the experiment sequence and the
+evidence to retain.
 
 ## Pilot status
 
@@ -28,8 +29,8 @@ experiment sequence and the evidence to retain. Code remains authoritative here.
 
 The existing Lab 1 pilot below is retained; the L3 addition does not replace
 or overwrite those exercises. Student starter repository: [gsebik/eos-labs](https://github.com/gsebik/eos-labs).
-The source is a work in progress; clone a snapshot and record its commit before
-collecting evidence. Reference firmware is supplied separately by the lecturer.
+Record the commit or tag you use before collecting evidence. Reference firmware
+is supplied separately by the lecturer.
 
 Lab 1 is being piloted as short exercise sets. Each exercise follows:
 

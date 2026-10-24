@@ -59,7 +59,7 @@ static void fft(void)
 }
 
 void sig_dsp_process(const int32_t samples[SIG_SAMPLES], unsigned repeats,
-                     sig_result_t *result)
+                     spectrum_result_t *result)
 {
     float energy = 0;
     for (unsigned i = 0; i < SIG_SAMPLES; ++i) {

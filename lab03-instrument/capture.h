@@ -27,7 +27,7 @@ typedef struct {
     const int32_t *samples;
     uint32_t id, job;
     uint64_t ready_us;
-} sig_block_t;
+} sample_block_t;
 
 typedef struct {
     /* Kept separate on purpose: a rejected queue send, a completion with no
@@ -49,7 +49,7 @@ void sig_signal_step(int direction);
 uint32_t sig_signal_hz(void);
 /* Wait for one completed block. The RTOS build blocks in xQueueReceive; the
  * foreground build polls and returns false when nothing is ready. */
-bool sig_capture_receive(sig_block_t *block);
+bool sig_capture_receive(sample_block_t *block);
 void sig_capture_release(uint32_t id);
 sig_capture_stats_t sig_capture_stats(void);
 uint32_t sig_adc_hz(void);
