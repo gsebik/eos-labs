@@ -1,3 +1,16 @@
+/* The instrument application: four tasks over one shared sample pool and one
+ * shared spectrum.
+ *
+ *   processing_task  priority 3  blocks on a descriptor, computes, publishes
+ *   display_task     priority 2  every 100 ms, copies the spectrum and draws
+ *   settings_task    priority 1  every 20 ms, polls buttons, writes settings
+ *   reporting_task   priority 1  every second, prints counters and CPU shares
+ *
+ * The numbers in brackets [0]..[6] mark the source locations the lab manual
+ * refers to. Everything this file owns is declared static: the components in
+ * capture.c, pool.c, workload.c, panel.c and trace.c are separate modules with
+ * their own contracts.
+ */
 #include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
@@ -50,7 +63,7 @@ static void require_success(BaseType_t result)
 /* [4] Settings lock. The settings task writes the settings under it and the
  * processing task reads them once per block. The display never uses it. Both
  * critical sections are short; a reader can still wait if the owner is
- * pre-empted while it holds the lock, which is what the settings wait records. */
+ * pre-empted while holding the lock, which is what the settings wait is. */
 static void settings_acquire(void)
 {
 #if EOS_SIG_RTOS
@@ -62,6 +75,8 @@ static void settings_acquire(void)
 #endif
 }
 
+/* Give the settings lock back. Short by design: a reader that needs the
+ * settings must not wait for unrelated work. */
 static void settings_release(void)
 {
 #if EOS_SIG_RTOS
@@ -80,6 +95,8 @@ static void spectrum_acquire(void)
 #endif
 }
 
+/* Give the spectrum lock back. Called as soon as the copy is complete, so the
+ * lock never spans the screen transfer. */
 static void spectrum_release(void)
 {
 #if EOS_SIG_RTOS
@@ -205,6 +222,13 @@ static void buttons_poll(void)
     }
 }
 
+/* Print one status group and the kernel's CPU shares.
+ *
+ * All counters are read with interrupts masked so a group is internally
+ * consistent: a value from the first line cannot be paired with a count from
+ * the second line of a different group. The group is one record; keep whole
+ * groups rather than splicing fields from several.
+ */
 static void report_status(void)
 {
     const sig_capture_stats_t capture = sig_capture_stats();
@@ -263,6 +287,9 @@ static void processing_task(void *unused)
     }
 }
 
+/* Redraw every EOS_DISPLAY_PERIOD_MS. The period is a sleep after the draw, so
+ * the frame rate depends on how long a redraw takes; that is the baseline
+ * behaviour the display experiment is about. */
 static void display_task(void *unused)
 {
     (void)unused;
@@ -272,6 +299,8 @@ static void display_task(void *unused)
     }
 }
 
+/* Poll the buttons, then republish the settings, once per EOS_UI_PERIOD_MS.
+ * Both operations are short, which is why this lock has no long owner. */
 static void settings_task(void *unused)
 {
     (void)unused;
@@ -283,6 +312,8 @@ static void settings_task(void *unused)
     }
 }
 
+/* Print the status group and the kernel's CPU accounting once a second.
+ * The output costs time at 115200 baud and appears in the measurements. */
 static void reporting_task(void *unused)
 {
     (void)unused;
@@ -308,6 +339,8 @@ void vApplicationGetIdleTaskMemory(StaticTask_t **control, StackType_t **stack,
     *size = configMINIMAL_STACK_SIZE;
 }
 
+/* FreeRTOS hooks: stop with the reason in g_fault rather than continue with a
+ * broken heap or stack. A debugger can read g_fault after the target halts. */
 void vApplicationStackOverflowHook(TaskHandle_t task, char *name)
 {
     (void)task; (void)name;

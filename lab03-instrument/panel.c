@@ -20,6 +20,8 @@
 #include "hardware/spi.h"
 
 static uint32_t spi_hz;
+
+/* Send one controller command: data/command low, one byte, then back high. */
 static void command(uint8_t value)
 {
     while (spi_is_busy(spi0)) tight_loop_contents();
@@ -28,15 +30,23 @@ static void command(uint8_t value)
     while (spi_is_busy(spi0)) tight_loop_contents();
     gpio_put(6, 1);
 }
+/* Send raw bytes in whichever mode data/command is already in. */
 static void bytes(const uint8_t *data, size_t count)
 {
     spi_write_blocking(spi0, data, count);
 }
+/* Write one controller register. */
 static void setting(uint8_t reg, uint8_t value)
 {
     command(reg);
     bytes(&value, 1);
 }
+/* Fill an axis-aligned rectangle with one colour.
+ *
+ * Used once, to clear the panel after reset: the controller's memory is
+ * undefined at power-on, so the area the frame renderer does not touch would
+ * otherwise show as noise.
+ */
 static void rectangle(unsigned x, unsigned y, unsigned width, unsigned height,
                       uint16_t color)
 {
@@ -55,6 +65,10 @@ static void rectangle(unsigned x, unsigned y, unsigned width, unsigned height,
     for (unsigned y = 0; y < height; ++y) bytes(line, width * 2);
 }
 
+/* Reset sequence for the ST7796, then one full clear.
+ *
+ * The panel comes up with inverted pixel data, which is why INVON (0x21) is
+ * sent: without it black shows as white. */
 void sig_panel_init(void)
 {
     spi_hz = spi_init(spi0, 16000000);
@@ -185,6 +199,7 @@ static uint8_t row_bytes[PANEL_W * 2];
 static unsigned bar_height[SIG_BANDS];
 static uint32_t tone_hz;
 
+/* Index into the glyph table, or the blank glyph for anything unsupported. */
 static unsigned glyph_index(char c)
 {
     if (c >= '0' && c <= '9') return (unsigned)(c - '0');
@@ -204,6 +219,8 @@ static unsigned text_row(unsigned y, unsigned band_top)
 }
 
 /* Paint one row of a string, six pixels per character. */
+/* Paint one row of a string into the current row buffer, six pixels per
+ * character. Characters outside the table are drawn blank. */
 static void put_text(unsigned x0, unsigned glyph_row_index, const char *text)
 {
     for (unsigned i = 0; text[i] != '\0'; ++i) {
@@ -259,6 +276,7 @@ static void open_window(unsigned x0, unsigned y0, unsigned x1, unsigned y1)
  * panel's 180 degree rotation: composing and sending in the same order would
  * mirror the picture left-to-right. Because the whole row is reversed, the
  * axis labels stay readable without any extra work. */
+/* Push the composed row out as big-endian RGB565 pixels. */
 static void send_row(void)
 {
     for (unsigned x = 0; x < PANEL_W; ++x) {
@@ -278,10 +296,18 @@ static unsigned bar_pixels(float level, unsigned rows)
     return (unsigned)(level * (float)rows / 10.0f);
 }
 
-/* Tell the renderer which tone the generator is currently producing. */
+/* The renderer keeps the tone for the axis tick and the readout, so the frame
+ * states the frequency it was taken at. */
 void sig_panel_set_tone(uint32_t hz) { tone_hz = hz; }
 
-/* Draw one complete frame. `rows` is the tallest bar (EOS_DISPLAY_ROWS). */
+/* Compose and send every row of one frame: axis and labels, the plot, then the
+ * tone readout.
+ *
+ * Each row is composed into one buffer and written with a single SPI transfer,
+ * so the transfer count is fixed and only the row count changes with `rows`.
+ * Every plot row is written whether the bar reaches it or not, which is what
+ * erases a bar that has shrunk.
+ */
 void sig_panel_draw(const spectrum_result_t *result, unsigned rows)
 {
     if (rows > PLOT_MAX) rows = PLOT_MAX;

@@ -26,7 +26,10 @@
 
 #define TASK_MARKER_MASK  ((1u << 16) | (1u << 19) | (1u << 20))
 
-/* Task numbers, shared with the report and with analyzer.py. */
+/* Task numbers, shared with the status report and with analyzer.py.
+ *
+ * The idle task keeps 0. Numbers above 7 would wrap, because only three pins
+ * are driven. */
 enum {
     TASK_ID_IDLE = 0,
     TASK_ID_DSP = 1,
@@ -36,7 +39,14 @@ enum {
     TASK_ID_CONTROLLER = 5,
 };
 
-/* Publish a task number. Only three bits are used, so values above 7 wrap. */
+/* Drive the three marker pins with a task number.
+ *
+ * Writes the whole SIO output register once, so the hook costs a few cycles per
+ * context switch. Called by the FreeRTOS switch hook below, and by main() once
+ * to publish the idle task before the scheduler starts.
+ *
+ * @param task_number value 0..7; only the lowest three bits reach the pins
+ */
 #ifndef __ASSEMBLER__
 static inline void task_marker_publish(uint32_t task_number)
 {
