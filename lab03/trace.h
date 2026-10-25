@@ -33,7 +33,12 @@ enum {
     SIG_SETTINGS_WRITE,      /* settings task published new values */
     SIG_SETTINGS_WAIT,       /* a task waited for the settings lock */
     SIG_PUBLISH_WAIT,        /* a task waited for the spectrum lock */
-    SIG_RESULT_PUBLISHED     /* the result is copied and the lock released */
+    SIG_RESULT_PUBLISHED,    /* the result is copied and the lock released */
+    /* Who owned the spectrum lock, and for how long. `job` carries the task
+     * number of the owner, `arg` the hold time in microseconds, so a wait can
+     * be attributed to a task instead of guessed from the source. */
+    SIG_SPECTRUM_TAKE,
+    SIG_SPECTRUM_GIVE
 };
 
 /* One record: 24 bytes, little-endian, as the host decoder expects. */

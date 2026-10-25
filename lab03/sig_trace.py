@@ -27,7 +27,7 @@ RECORD = struct.Struct('<QIIII')
 EVENTS = {1: 'block_ready', 2: 'work_start', 3: 'work_complete',
           4: 'block_release', 5: 'drop', 6: 'display_start', 7: 'display_done',
           8: 'settings_write', 9: 'settings_wait', 10: 'publish_wait',
-          11: 'result_published'}
+          11: 'result_published', 12: 'spectrum_take', 13: 'spectrum_give'}
 # The two completion endpoints measure different obligations. Buffer return
 # decides whether acquisition can reuse the storage; publication decides whether
 # the worker can take its next block. They must not share one verdict.

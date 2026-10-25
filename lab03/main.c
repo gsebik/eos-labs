@@ -98,10 +98,17 @@ static void settings_release(void)
  * the display copies and the processing task replaces. It is deliberately
  * separate from the settings lock, so a display critical section cannot be
  * confused with a settings-lock wait. */
+static uint64_t spectrum_taken_us;
 static void spectrum_acquire(void)
 {
 #if EOS_SIG_RTOS
+    const uint64_t start = time_us_64();
     require_success(xSemaphoreTake(spectrum_mutex, portMAX_DELAY));
+    spectrum_taken_us = time_us_64();
+    /* Attribute the lock to the task that just took it, so a later wait can be
+     * traced to an owner rather than inferred. */
+    sig_trace(SIG_SPECTRUM_TAKE, (uint32_t)uxTaskGetTaskNumber(xTaskGetCurrentTaskHandle()),
+              (uint32_t)(spectrum_taken_us - start), 0);
 #endif
 }
 
@@ -110,7 +117,9 @@ static void spectrum_acquire(void)
 static void spectrum_release(void)
 {
 #if EOS_SIG_RTOS
+    const uint32_t held = (uint32_t)(time_us_64() - spectrum_taken_us);
     require_success(xSemaphoreGive(spectrum_mutex));
+    sig_trace(SIG_SPECTRUM_GIVE, (uint32_t)uxTaskGetTaskNumber(xTaskGetCurrentTaskHandle()), held, 0);
 #endif
 }
 
