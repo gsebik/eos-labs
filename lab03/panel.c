@@ -418,9 +418,9 @@ static void compose_axis(unsigned x, unsigned y, uint16_t *out)
 static void compose_scale(unsigned x, unsigned y, uint16_t *out)
 {
     const unsigned row = y - scale_top;
-    const unsigned first = band_column(SIG_TONE_BAND_MIN);
-    const unsigned last = band_column(SIG_TONE_BAND_MAX);
-    if (row >= 2 && row < 4 && x >= first && x <= last) out[x] = COLOUR_AXIS;
+    /* The track spans the whole frequency axis, so it lines up with the marks
+     * above it; the ticks and labels show the range the generator can reach. */
+    if (row >= 2 && row < 4) out[x] = COLOUR_AXIS;
     if (row >= 2 && row < 9) {
         for (unsigned i = 0; i < 3; ++i) {
             const unsigned ends[3] = { SIG_TONE_BAND_MIN, SIG_TONE_BAND_MID,
