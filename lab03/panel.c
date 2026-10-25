@@ -238,19 +238,6 @@ static unsigned text_row(unsigned y, unsigned band_top)
 }
 
 /* Paint one row of a string, six pixels per character. */
-/* Paint one row of a string into the current row buffer, six pixels per
- * character. Characters outside the table are drawn blank. */
-static void put_text(unsigned x0, unsigned glyph_row_index, const char *text)
-{
-    for (unsigned i = 0; text[i] != '\0'; ++i) {
-        const unsigned bits = glyphs[glyph_index(text[i])][glyph_row_index];
-        for (unsigned column = 0; column < 5; ++column) {
-            const unsigned px = x0 + i * 6 + column;
-            if ((bits & (16u >> column)) && px < PANEL_W) row_pixels[px] = COLOUR_AXIS;
-        }
-    }
-}
-
 /* Append `value` as at least `width` decimal digits, most significant first. */
 static unsigned append_digits(char *out, unsigned at, unsigned value, unsigned width)
 {
@@ -296,17 +283,6 @@ static void open_window(unsigned x0, unsigned y0, unsigned x1, unsigned y1)
  * from its last row to its first, so the controller's increasing row address
  * runs from the bottom of the picture to the top. Both halves are needed: with
  * only the horizontal one, the bars and the axis come out upside down. */
-/* Push the composed row out as big-endian RGB565 pixels. */
-static void send_row(void)
-{
-    for (unsigned x = 0; x < PANEL_W; ++x) {
-        const uint16_t pixel = row_pixels[PANEL_W - 1 - x];
-        row_bytes[2 * x] = (uint8_t)(pixel >> 8);
-        row_bytes[2 * x + 1] = (uint8_t)(pixel & 255);
-    }
-    bytes(row_bytes, sizeof row_bytes);
-}
-
 /* Convert one band's strength into a bar height in pixels.
  *
  * Band strengths are log1p values, and an idle band still measures about 2-4
@@ -366,7 +342,7 @@ static unsigned label_at(unsigned column, unsigned length)
  * Each frame then redraws the bars whose height changed, the marker if it
  * moved, and the readout if its text changed.
  */
-static unsigned frame_top, plot_top, plot_bottom, scale_top, text_top;
+static unsigned frame_top, frame_bottom, plot_top, plot_bottom, scale_top, text_top;
 static int last_marker = -1;      /* band the amber marker was drawn at */
 static char last_readout[64];     /* text currently on the readout row */
 
@@ -376,18 +352,33 @@ static char last_readout[64];     /* text currently on the readout row */
  * frame row of the strip is sent first. */
 typedef void (*row_painter)(unsigned x, unsigned y, uint16_t *out);
 
+/* The controller's row addresses run upward on this panel, so the frame is
+ * stored mirrored: source row y lives at address frame_top + (frame_bottom-1-y).
+ * A partial strip must be written to that mirrored range, not to its own y. */
+static unsigned address_of(unsigned y)
+{
+    return frame_top + (frame_bottom - 1 - y);
+}
+
 static void send_strip(unsigned x0, unsigned y0, unsigned w, unsigned h,
                        row_painter compose)
 {
     if (!w || !h) return;
-    open_window(x0, y0, x0 + w - 1, y0 + h - 1);
+    /* Both axes are mirrored: the panel's 180 degree rotation applies to the
+     * column range as well, so the strip is written to the mirrored window and
+     * each row is sent reversed. */
+    open_window(PANEL_W - (x0 + w), address_of(y0 + h - 1),
+                PANEL_W - 1 - x0, address_of(y0));
     for (unsigned step = 0; step < h; ++step) {
         const unsigned y = y0 + h - 1 - step;
-        for (unsigned x = 0; x < w; ++x) row_pixels[x] = COLOUR_BLACK;
-        compose(0, y, row_pixels);
         for (unsigned x = 0; x < w; ++x) {
-            row_bytes[2 * x] = (uint8_t)(row_pixels[x] >> 8);
-            row_bytes[2 * x + 1] = (uint8_t)(row_pixels[x] & 255);
+            row_pixels[x] = COLOUR_BLACK;
+            compose(x, y, row_pixels);
+        }
+        for (unsigned x = 0; x < w; ++x) {
+            const uint16_t pixel = row_pixels[w - 1 - x];
+            row_bytes[2 * x] = (uint8_t)(pixel >> 8);
+            row_bytes[2 * x + 1] = (uint8_t)(pixel & 255);
         }
         bytes(row_bytes, w * 2);
     }
@@ -455,16 +446,21 @@ static void compose_bar(unsigned x, unsigned y, uint16_t *out)
 }
 
 static int paint_marker_band;
+static bool paint_marker_on;
 static void compose_marker(unsigned x, unsigned y, uint16_t *out)
 {
-    const unsigned column = x;
+    /* The marker lives on top of the static frame, so repaint that first:
+     * erasing the old marker must restore the axis or the scale underneath it,
+     * not leave a black hole. */
+    if (y < scale_top) compose_axis(x, y, out);
+    else compose_scale(x, y, out);
+    if (!paint_marker_on || paint_marker_band < 0) return;
+
     const unsigned target = band_column((unsigned)paint_marker_band);
-    if (y < scale_top) {
-        if (y == frame_top + 1 && (column == target || column == target + 1)) {
-            out[x] = COLOUR_TONE;
-        }
+    if (y == frame_top + 1 && (x == target || x == target + 1)) {
+        out[x] = COLOUR_TONE;
     } else if (y >= scale_top + 1 && y < scale_top + 9
-               && column + 0 >= target - 1 && column <= target + 1) {
+               && x + 1 >= target && x <= target + 1) {
         out[x] = COLOUR_TONE;
     }
 }
@@ -508,13 +504,14 @@ static void draw_bar(unsigned band, unsigned rows, unsigned old_height,
 static void draw_marker(int band)
 {
     if (band == last_marker) return;
-    const int previous = last_marker;
-    paint_marker_band = previous;
-    if (previous >= 0) {
+    if (last_marker >= 0) {
+        paint_marker_band = last_marker;
+        paint_marker_on = false;
         send_strip(0, frame_top + 1, PANEL_W, 1, compose_marker);
         send_strip(0, scale_top + 1, PANEL_W, 8, compose_marker);
     }
     paint_marker_band = band;
+    paint_marker_on = true;
     send_strip(0, frame_top + 1, PANEL_W, 1, compose_marker);
     send_strip(0, scale_top + 1, PANEL_W, 8, compose_marker);
     last_marker = band;
@@ -547,6 +544,7 @@ void sig_panel_draw(const spectrum_result_t *result, unsigned rows,
         plot_bottom = plot_top + rows;
         scale_top = plot_bottom;
         text_top = scale_top + SCALE_H;
+        frame_bottom = text_top + TEXT_H;
         for (unsigned band = 0; band < SIG_BANDS; ++band) bar_height[band] = 0;
         last_marker = -1;
         last_readout[0] = '\0';
