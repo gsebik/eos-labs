@@ -120,27 +120,36 @@ static void dma_done(void)
     gpio_put(SIG_ISR_MARK_PIN, 0);
 }
 
-/* Bin-aligned test tones. The divider stays at 1, so the wrap must be an
- * integer that fits the 16-bit counter: wrap + 1 = clk / (bin * rate / block).
- * Choosing bins as multiples of four keeps each tone inside one displayed
- * band, which is what makes the picture stable to read. */
-static const uint16_t tone_bins[] = {12, 16, 20, 24, 32, 40, 48, 64, 80, 96};
+/* Tone generator: one frequency per displayed band.
+ *
+ * Band b covers FFT bins 4b..4b+3, so the tone sits at bin 4b+2: the middle of
+ * the band, which keeps the fundamental inside one bar as the sweep moves. The
+ * PWM divider stays at 1, so the wrap must fit the 16-bit counter:
+ * wrap + 1 = clk_sys / (bin * SIG_RATE_HZ / SIG_BLOCK).
+ *
+ * The lowest usable band is 3 (about 2.3 kHz): below it the wrap would exceed
+ * the counter. The highest is 30 (about 23.4 kHz), still below the 25 kHz
+ * Nyquist limit of the 50 kS/s sampler.
+ */
 static uint tone_slice;
-static unsigned tone_index;
+static unsigned tone_band = SIG_TONE_BAND_DEFAULT;
 static uint32_t tone_hz;
 
-/* Program the PWM slice for one bin, as a 50 % duty square wave.
- *
- * Returns without changing anything if the wrap value would not fit the
- * counter, so a bad table entry cannot leave the generator at the wrong
+/* Program the PWM slice for one band as a 50 % duty square wave.
+ * Returns without changing anything when the band is out of range or its wrap
+ * would not fit, so a bad request cannot leave the generator at a wrong
  * frequency. */
-static void apply_tone(uint16_t bin)
+static void apply_band(unsigned band)
 {
+    if (band < SIG_TONE_BAND_MIN) band = SIG_TONE_BAND_MIN;
+    if (band > SIG_TONE_BAND_MAX) band = SIG_TONE_BAND_MAX;
+    const uint32_t bin = band * 4u + 2u;
     const uint32_t per_block = clock_get_hz(clk_sys) / SIG_RATE_HZ * SIG_BLOCK;
     const uint32_t wrap_plus_1 = per_block / bin;
     if (wrap_plus_1 < 2 || wrap_plus_1 > 0x10000u) return;
     pwm_set_wrap(tone_slice, (uint16_t)(wrap_plus_1 - 1));
     pwm_set_gpio_level(SIG_PWM_PIN, (uint16_t)(wrap_plus_1 / 2));
+    tone_band = band;
     tone_hz = clock_get_hz(clk_sys) / wrap_plus_1;
 }
 
@@ -151,15 +160,17 @@ void sig_signal_start(void)
     pwm_config config = pwm_get_default_config();
     pwm_config_set_clkdiv(&config, 1.0f);
     pwm_init(tone_slice, &config, true);
-    tone_index = 1;                     /* bin 16: the 3125 Hz reference tone */
-    apply_tone(tone_bins[tone_index]);
+    apply_band(SIG_TONE_BAND_DEFAULT);
 }
+
+void sig_signal_set_band(unsigned band) { apply_band(band); }
+
+unsigned sig_signal_band(void) { return tone_band; }
 
 void sig_signal_step(int direction)
 {
-    const unsigned count = sizeof tone_bins / sizeof tone_bins[0];
-    tone_index = (unsigned)(((int)tone_index + direction + (int)count) % (int)count);
-    apply_tone(tone_bins[tone_index]);
+    const int next = (int)tone_band + direction;
+    apply_band((unsigned)next);
 }
 
 uint32_t sig_signal_hz(void) { return tone_hz; }

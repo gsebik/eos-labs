@@ -45,6 +45,23 @@ static uint32_t processed, misses, largest_response, largest_compute;
 static uint32_t largest_draw, largest_settings_wait, largest_publish_wait;
 static uint32_t largest_publication;
 static volatile uint32_t g_fault;
+
+/* One entry per processed block, so the display can draw what happened between
+ * frames. A block that never arrived leaves no entry, which is how a gap in
+ * the picture maps to lost input rather than to a quiet signal. */
+enum { HISTORY_SLOTS = 512, HISTORY_COLUMNS = 480 };
+static uint8_t history_band[HISTORY_SLOTS];
+static uint32_t history_job[HISTORY_SLOTS];
+static volatile uint32_t history_next;      /* next block number to be written */
+static uint32_t late_blocks;                /* publication later than one period */
+
+/* Sweep state. The tone walks one band per step and reverses at the ends, so
+ * the picture moves one bar at a time without any input from the user. */
+static bool sweep_running = true;
+static int sweep_direction = 1;
+static unsigned sweep_ticks;
+enum { SWEEP_TICKS_PER_STEP = 8 };          /* 8 x EOS_UI_PERIOD_MS = 160 ms */
+
 #if EOS_SIG_RTOS
 static TaskHandle_t processing_handle, display_handle, settings_handle,
     reporting_handle;
@@ -151,8 +168,15 @@ static bool process_block(void)
 
     const uint32_t saved = save_and_disable_interrupts();
     processed++;
+    const uint32_t slot = block.job % HISTORY_SLOTS;
+    history_band[slot] = (uint8_t)(result.peak_bin / 4u);
+    history_job[slot] = block.job;
+    history_next = block.job + 1;
     const uint32_t buffer_return = (uint32_t)(release - block.ready_us);
     const uint32_t publication = (uint32_t)(published - block.ready_us);
+    /* The instrument promises a result within one block period. Missing that
+     * promise loses nothing, so it is counted separately from dropped input. */
+    if (publication > SIG_BLOCK_PERIOD_US) late_blocks++;
     /* The deadline belongs to storage reuse: until this point DMA cannot use
      * the buffer again. Publication is reported separately. */
     const bool late = buffer_return > EOS_DEADLINE_US;
@@ -192,20 +216,39 @@ static void draw_spectrum(void)
     sig_panel_set_tone(sig_signal_hz());
     const uint64_t start = sig_trace(SIG_DISPLAY_START, 0, EOS_DISPLAY_ROWS, 0);
     spectrum_result_t snapshot;
+    static uint8_t columns[HISTORY_COLUMNS], present[HISTORY_COLUMNS];
+    sig_panel_history_t history = {
+        .band = columns, .present = present, .count = HISTORY_COLUMNS,
+    };
     spectrum_acquire();
     snapshot = published_spectrum;
     spectrum_release();
-    sig_panel_draw(&snapshot, EOS_DISPLAY_ROWS);
+    const uint32_t saved = save_and_disable_interrupts();
+    const uint32_t head = history_next;
+    history.lost = sig_capture_stats().dropped;
+    history.late = late_blocks;
+    for (unsigned column = 0; column < HISTORY_COLUMNS; ++column) {
+        const uint32_t job = head - HISTORY_COLUMNS + column;
+        const uint32_t slot = job % HISTORY_SLOTS;
+        const bool known = head >= HISTORY_COLUMNS && history_job[slot] == job;
+        present[column] = known ? 1 : 0;
+        columns[column] = known ? history_band[slot] : 0;
+    }
+    restore_interrupts(saved);
+    sig_panel_draw(&snapshot, EOS_DISPLAY_ROWS, &history);
     const uint64_t finish = sig_trace(SIG_DISPLAY_DONE, 0, 0, 0);
     const uint32_t elapsed = (uint32_t)(finish - start);
     gpio_put(MARK_DISPLAY, 0);
     if (elapsed > largest_draw) largest_draw = elapsed;
 }
 
-/* GP14/GP15 are the station buttons: external pull-ups, active low. They step
- * the generated test tone. Polled from the existing settings task, so the task
- * set and priorities stay as the timing experiment expects. Debounced by
- * ignoring further transitions for 200 ms. */
+/* GP14/GP15 are the station buttons: external pull-ups, active low.
+ *
+ * GP14 stops or restarts the sweep. GP15 steps one band by hand, which also
+ * stops the sweep so the chosen band stays put. Polled from the settings task,
+ * so the task set and priorities stay as the timing experiment expects.
+ * Debounced by ignoring further transitions for 200 ms.
+ */
 static void buttons_poll(void)
 {
     static bool previous[2];
@@ -215,11 +258,28 @@ static void buttons_poll(void)
     for (unsigned i = 0; i < 2; ++i) {
         const bool pressed = !gpio_get(pins[i]);
         if (pressed && !previous[i] && now >= next_allowed) {
-            sig_signal_step(i == 0 ? 1 : -1);
+            if (i == 0) {
+                sweep_running = !sweep_running;
+            } else {
+                sweep_running = false;
+                sig_signal_step(1);
+            }
             next_allowed = now + 200000ull;
         }
         previous[i] = pressed;
     }
+}
+
+/* Advance the sweep by one band when it is due. Called from the settings task,
+ * so the moving tone costs nothing in the processing path. */
+static void sweep_poll(void)
+{
+    if (!sweep_running) return;
+    if (++sweep_ticks < SWEEP_TICKS_PER_STEP) return;
+    sweep_ticks = 0;
+    const int next = (int)sig_signal_band() + sweep_direction;
+    if (next > SIG_TONE_BAND_MAX || next < SIG_TONE_BAND_MIN) sweep_direction = -sweep_direction;
+    sig_signal_step(sweep_direction);
 }
 
 /* Print one status group and the kernel's CPU shares.
@@ -238,14 +298,16 @@ static void report_status(void)
     const uint32_t draw_us = largest_draw, settings_wait = largest_settings_wait;
     const uint32_t publish_wait = largest_publish_wait;
     const uint32_t publication = largest_publication;
+    const uint32_t late_count = late_blocks;
     const uint32_t level = level_q15, hits = detections;
     const float checksum = published_spectrum.checksum;
     restore_interrupts(saved);
     printf("sig rtos=%d kernel=%s blocks=%lu processed=%lu "
-           "dropped=%lu overrun=%lu misses_%luus=%lu\n",
+           "dropped=%lu late=%lu overrun=%lu misses_%luus=%lu\n",
            EOS_SIG_RTOS, EOS_KERNEL_VERSION,
            (unsigned long)capture.completed, (unsigned long)done,
-           (unsigned long)capture.dropped, (unsigned long)capture.overruns,
+           (unsigned long)capture.dropped, (unsigned long)late_count,
+           (unsigned long)capture.overruns,
            (unsigned long)EOS_DEADLINE_US, (unsigned long)lost);
     printf("buffer_return_max_us=%lu publication_response_max_us=%lu "
            "compute_max_us=%lu draw_max_us=%lu "
@@ -308,6 +370,7 @@ static void settings_task(void *unused)
     for (;;) {
         vTaskDelayUntil(&release, pdMS_TO_TICKS(EOS_UI_PERIOD_MS));
         buttons_poll();
+        sweep_poll();
         write_settings();
     }
 }

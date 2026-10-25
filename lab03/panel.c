@@ -139,19 +139,21 @@ void sig_panel_init(void)
  *                               |      spectrum plot        |  bar HEIGHT
  *                               |                           |  = band strength
  *     y = AXIS_H + rows         +---------------------------+
- *                               |  generated tone readout   |
- *     y = AXIS_H + rows + TEXT_H+---------------------------+
+ *                               |  per-block history strip  |
+ *     y = AXIS_H+rows+HISTORY_H +---------------------------+
+ *                               | tone readout and counters |
+ *     y = ... + TEXT_H          +---------------------------+
  *
  * `rows` is the tallest bar in pixels, from EOS_DISPLAY_ROWS. It is both the
  * plot height and the pixel-transfer budget, so doubling it roughly doubles
  * the redraw time: an experiment control, not a cosmetic setting. */
 enum { PANEL_W = 480, PANEL_H = 320, BAND_PITCH = 15, BAR_W = 11 };
-enum { AXIS_H = 12, TEXT_H = 12 };
-enum { PLOT_MAX = PANEL_H - AXIS_H - TEXT_H };
+enum { AXIS_H = 12, TEXT_H = 12, HISTORY_H = 10 };
+enum { PLOT_MAX = PANEL_H - AXIS_H - TEXT_H - HISTORY_H };
 
 /* Colours in RGB565: 5 bits red, 6 bits green, 5 bits blue. */
 enum { COLOUR_BLACK = 0x0000, COLOUR_BAR = 0x07e0, COLOUR_AXIS = 0x7bef,
-       COLOUR_TONE = 0xfd20 };
+       COLOUR_TONE = 0xfd20, COLOUR_GAP = 0xf800 };
 
 /* 5x7 glyphs: seven rows, five bits each, left column is the high bit. */
 static const uint8_t glyphs[][7] = {
@@ -171,8 +173,16 @@ static const uint8_t glyphs[][7] = {
     {31, 1, 2, 4, 8, 16, 31},     /* z */
     {0, 0, 0, 0, 0, 0, 0},        /* space */
     {16, 18, 20, 24, 20, 18, 17}, /* k */
+    {16, 16, 16, 16, 16, 16, 31}, /* L */
+    {14, 17, 17, 17, 17, 17, 14}, /* O */
+    {14, 17, 16, 14, 1, 17, 14},  /* S */
+    {31, 4, 4, 4, 4, 4, 4},       /* T */
+    {14, 17, 17, 31, 17, 17, 17}, /* A */
+    {31, 16, 16, 30, 16, 16, 31}, /* E */
 };
-enum { GLYPH_UNKNOWN = 11, GLYPH_H = 12, GLYPH_Z = 13, GLYPH_SPACE = 14, GLYPH_K = 15 };
+enum { GLYPH_UNKNOWN = 11, GLYPH_H = 12, GLYPH_Z = 13, GLYPH_SPACE = 14, GLYPH_K = 15,
+       GLYPH_L = 16, GLYPH_O = 17, GLYPH_S = 18, GLYPH_T = 19, GLYPH_A = 20,
+       GLYPH_E = 21 };
 
 /* The axis is absolute, in kilohertz, spanning the whole 0-25 kHz range at
  * round 5 kHz steps. It must be absolute rather than relative to the tone: a
@@ -206,6 +216,12 @@ static unsigned glyph_index(char c)
     if (c == '.') return 10;
     if (c == 'H') return GLYPH_H;
     if (c == 'z') return GLYPH_Z;
+    if (c == 'L') return GLYPH_L;
+    if (c == 'O') return GLYPH_O;
+    if (c == 'S') return GLYPH_S;
+    if (c == 'T') return GLYPH_T;
+    if (c == 'A') return GLYPH_A;
+    if (c == 'E') return GLYPH_E;
     if (c == ' ') return GLYPH_SPACE;
     return GLYPH_UNKNOWN;
 }
@@ -308,7 +324,8 @@ void sig_panel_set_tone(uint32_t hz) { tone_hz = hz; }
  * Every plot row is written whether the bar reaches it or not, which is what
  * erases a bar that has shrunk.
  */
-void sig_panel_draw(const spectrum_result_t *result, unsigned rows)
+void sig_panel_draw(const spectrum_result_t *result, unsigned rows,
+                    const sig_panel_history_t *history)
 {
     if (rows > PLOT_MAX) rows = PLOT_MAX;
     for (unsigned band = 0; band < SIG_BANDS; ++band) {
@@ -316,19 +333,28 @@ void sig_panel_draw(const spectrum_result_t *result, unsigned rows)
     }
     const unsigned plot_top = AXIS_H;
     const unsigned tone_top = AXIS_H + rows;
-    char tone_text[16];
-    unsigned tone_length = format_khz(tone_hz, tone_text);
-    const char unit[] = " kHz";
-    for (unsigned i = 0; unit[i] != '\0'; ++i) tone_text[tone_length++] = unit[i];
-    tone_text[tone_length] = '\0';
+    const unsigned history_top = tone_top;
+    const unsigned text_top = history_top + HISTORY_H;
+    const unsigned frame_bottom = text_top + TEXT_H;
+
+    char readout[64];
+    unsigned length = format_khz(tone_hz, readout);
+    const char unit[] = " kHz  LOST ";
+    for (unsigned i = 0; unit[i] != '\0'; ++i) readout[length++] = unit[i];
+    length = append_digits(readout, length, history ? history->lost : 0, 1);
+    const char late[] = "  LATE ";
+    for (unsigned i = 0; late[i] != '\0'; ++i) readout[length++] = late[i];
+    length = append_digits(readout, length, history ? history->late : 0, 1);
+    readout[length] = '\0';
+
     unsigned mark_band[AXIS_MARK_COUNT];
     for (unsigned i = 0; i < AXIS_MARK_COUNT; ++i) {
         mark_band[i] = band_of(axis_marks[i].hz);
     }
     const unsigned tone_marker = band_of(tone_hz) * BAND_PITCH;
 
-    open_window(0, 0, PANEL_W - 1, tone_top + TEXT_H - 1);
-    for (unsigned y = 0; y < tone_top + TEXT_H; ++y) {
+    open_window(0, 0, PANEL_W - 1, frame_bottom - 1);
+    for (unsigned y = 0; y < frame_bottom; ++y) {
         for (unsigned x = 0; x < PANEL_W; ++x) row_pixels[x] = COLOUR_BLACK;
         if (y < plot_top) {
             const unsigned glyph = text_row(y, 0);
@@ -356,9 +382,23 @@ void sig_panel_draw(const spectrum_result_t *result, unsigned rows)
                     row_pixels[x] = color;
                 }
             }
+        } else if (y < text_top) {
+            /* History strip: one column per processed block, oldest on the
+             * left. A missing block is drawn red, so lost input is visible even
+             * when the bars above still look plausible. */
+            if (!history || !history->band || !history->present) continue;
+            const unsigned column = y - history_top;
+            for (unsigned i = 0; i < history->count && i < PANEL_W; ++i) {
+                if (!history->present[i]) {
+                    row_pixels[i] = COLOUR_GAP;
+                } else if (column == HISTORY_H - 1
+                           - (unsigned)(history->band[i] * HISTORY_H / SIG_BANDS)) {
+                    row_pixels[i] = COLOUR_BAR;
+                }
+            }
         } else {
-            const unsigned glyph = text_row(y, tone_top);
-            if (glyph < 7) put_text(6, glyph, tone_text);
+            const unsigned glyph = text_row(y, text_top);
+            if (glyph < 7) put_text(6, glyph, readout);
         }
         send_row();
     }

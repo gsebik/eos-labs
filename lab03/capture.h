@@ -21,7 +21,10 @@ enum {
     SIG_BLOCK = 256,        /* samples per block, and the FFT window length */
     SIG_POOL = 3,           /* sample buffers: enough to overlap one block */
     SIG_ADC_CHANNEL = 2,    /* ADC channel 2 is GP28 */
-    SIG_PWM_HZ = 3125,      /* SIG_RATE_HZ / SIG_BLOCK * 16: FFT bin 16 */
+    SIG_TONE_BAND_DEFAULT = 16, /* middle of the sweep: about 11.6 kHz */
+    SIG_TONE_BAND_MIN = 3,      /* about 2.3 kHz; lower would overflow the PWM */
+    SIG_TONE_BAND_MAX = 30,     /* about 23.4 kHz, below the 25 kHz Nyquist */
+    SIG_BLOCK_PERIOD_US = SIG_BLOCK * 1000000 / SIG_RATE_HZ,  /* 5120 us */
     SIG_ISR_MARK_PIN = 18,  /* analyzer marker around the DMA handler body */
 };
 enum {
@@ -69,12 +72,17 @@ void sig_capture_start(void);
  */
 void sig_signal_start(void);
 
-/* Move the generated tone to the next or previous bin-aligned frequency.
+/* Put the generated tone in one displayed band, clamped to the usable range.
  *
- * Every step lands the tone on an exact FFT bin, so its energy stays in one
- * band instead of leaking between bands. @param direction +1 for the next
- * higher bin, -1 for the next lower one; the list wraps at both ends.
+ * One band is four FFT bins, so each step moves the picture by exactly one bar.
+ * @param band 0..SIG_BANDS-1; usable values are SIG_TONE_BAND_MIN..MAX
  */
+void sig_signal_set_band(unsigned band);
+
+/* The band the generator is currently producing. */
+unsigned sig_signal_band(void);
+
+/* Move one band down (-1) or up (+1). Parallel bands saturate at the ends. */
 void sig_signal_step(int direction);
 
 /* The frequency the generator is currently producing, in hertz.
