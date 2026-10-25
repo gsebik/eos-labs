@@ -18,7 +18,9 @@ The lab manual explains the investigation and refers to the numbered markers
   arithmetic.
 - `panel.c/.h`: supplied EP-0172 display renderer.
 - `trace.c/.h`, `sig_trace.py`: bounded on-target event trace and its host
-  decoder/checker.
+  decoder/checker. `decode --csv` writes one row per event.
+- `status_log.py`: turns a captured console log into one CSV row per status
+  group, with the deltas and rates already computed.
 - `rta.py`, `model-example.json`: restricted response-time calculator and one
   input file to copy and edit.
 - `analyzer.py`: developer work on the PicoGremlin analyzer capture path; not

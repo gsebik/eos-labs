@@ -16,10 +16,12 @@ and publication wait. It is NOT a complete FreeRTOS schedule, does not validate
 every task interaction, and does not prove that no physical samples were lost.
 """
 import argparse
+import csv
 import hashlib
 import json
 from pathlib import Path
 import struct
+import sys
 
 RECORD = struct.Struct('<QIIII')
 EVENTS = {1: 'block_ready', 2: 'work_start', 3: 'work_complete',
@@ -182,6 +184,8 @@ def main():
     dump.add_argument('--frozen', action='store_true')
     dump.add_argument('--elf', type=Path, required=True,
                       help='ELF recorded by the experimenter, not read from the target')
+    dump.add_argument('--csv', action='store_true',
+                      help='write one CSV row per event instead of JSON lines')
     check = commands.add_parser('check')
     check.add_argument('trace', type=Path)
     check.add_argument('--deadline-us', type=int, default=10240)
@@ -200,6 +204,13 @@ def main():
             header, records = decode(args.binary.read_bytes(), count,
                                      truncated, frozen)
             header['recorded_elf_sha256'] = hashlib.sha256(args.elf.read_bytes()).hexdigest()
+            if args.csv:
+                writer = csv.writer(sys.stdout)
+                writer.writerow(['t_us', 'ev', 'job', 'arg', 'aux'])
+                for event in records:
+                    writer.writerow([event['t_us'], event['ev'], event['job'],
+                                     event['arg'], event['aux']])
+                return 0
             print(json.dumps(header))
             for event in records:
                 print(json.dumps(event))
