@@ -32,7 +32,7 @@ option(EOS_INHERITANCE_MUTEX "Use an inheritance mutex in the priority-inheritan
 set(EOS_DEADLINE_US 10240 CACHE STRING "Block ready-to-release deadline in microseconds")
 set(EOS_DSP_REPEATS 4 CACHE STRING "Extra block-processing repeats")
 set(EOS_DISPLAY_ROWS 140 CACHE STRING "Plot height and per-band pixel-transfer budget")
-set(EOS_DISPLAY_PERIOD_MS 100 CACHE STRING "Display redraw period")
+set(EOS_DISPLAY_PERIOD_MS 50 CACHE STRING "Display redraw period")
 set(EOS_UI_PERIOD_MS 20 CACHE STRING "Settings update period")
 # This literal list is also the picolab build-knob discovery interface. It must
 # stay on ONE line: picolab discovers the option names with a line-based search,

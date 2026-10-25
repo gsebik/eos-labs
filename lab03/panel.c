@@ -293,12 +293,16 @@ static void open_window(unsigned x0, unsigned y0, unsigned x1, unsigned y1)
  *
  * The first test also rejects NaN and the second rejects infinity, so the cast
  * cannot overflow. */
-enum { BAR_FLOOR = 4 };            /* log1p units treated as the noise floor */
+/* Measured bands sit at 1.9-3.8 when idle and 4.1 upwards when a component is
+ * present, so the floor is the one number that decides how much of the comb is
+ * visible. 3.5 keeps a thin noise baseline and still shows the weaker
+ * harmonics; raising it hides noise but also erases real components. */
+#define BAR_FLOOR 3.5f
 static unsigned bar_pixels(float level, unsigned rows)
 {
-    if (!(level > (float)BAR_FLOOR)) return 0;
+    if (!(level > BAR_FLOOR)) return 0;
     if (level >= 10.0f) return rows;
-    return (unsigned)((level - (float)BAR_FLOOR) * (float)rows / (10.0f - BAR_FLOOR));
+    return (unsigned)((level - BAR_FLOOR) * (float)rows / (10.0f - BAR_FLOOR));
 }
 
 /* The renderer keeps the tone for the axis tick and the readout, so the frame
