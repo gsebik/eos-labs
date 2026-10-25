@@ -5,7 +5,7 @@
     python3 sig_view.py intervals trace.jsonl --csv      # every block, as CSV
     python3 sig_view.py intervals trace.jsonl --svg intervals.svg
     python3 sig_view.py locks trace.jsonl                # who held the spectrum lock
-    python3 sig_view.py timeline trace.jsonl --svg timeline.svg --job 30
+    python3 sig_view.py timeline trace.jsonl --svg timeline.svg --job 30   # or the default
     python3 sig_view.py inheritance reportA.log --svg schedule.svg
 
 `intervals` turns the five events of each block into the three numbers the lab
@@ -204,8 +204,7 @@ def timeline_svg(events, job, count):
     rows = {r['job']: r for r in blocks(events)}
     spans, _ = lock_spans(events)
     if job is None:
-        late = [r for r in rows.values() if r['publication'] > BLOCK_PERIOD_US]
-        job = (late[0]['job'] if late else sorted(rows)[len(rows) // 2])
+        job = max(rows.values(), key=lambda r: r['publication'])['job']
     first = rows[job]
     jobs = [rows[j] for j in sorted(rows) if job <= j < job + count]
     t0 = first['ready'] - 500
@@ -359,7 +358,8 @@ def main():
     p = cmds.add_parser('timeline')
     p.add_argument('trace', type=Path)
     p.add_argument('--svg', type=Path, required=True)
-    p.add_argument('--job', type=int, help='first block to draw (default: first LATE block)')
+    p.add_argument('--job', type=int,
+                   help='first block to draw (default: the block with the longest publication)')
     p.add_argument('--jobs', type=int, default=3, help='how many blocks (default 3)')
     p.set_defaults(run=cmd_timeline)
     p = cmds.add_parser('inheritance')
