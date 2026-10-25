@@ -431,8 +431,19 @@ static void compose_scale(unsigned x, unsigned y, uint16_t *out)
     }
     const unsigned glyph = text_row(y, scale_top + 14);
     if (glyph < 7) {
-        const char *labels[3] = { "2.3", "12.9", "23.4" };
-        const unsigned lengths[3] = { 3, 4, 4 };
+        /* Derived from the band maths so the labels cannot drift from the
+         * frequencies the generator actually produces. */
+        static char labels[3][8];
+        static unsigned lengths[3];
+        if (!labels[0][0]) {
+            const unsigned ends[3] = { SIG_TONE_BAND_MIN, SIG_TONE_BAND_MID,
+                                       SIG_TONE_BAND_MAX };
+            for (unsigned i = 0; i < 3; ++i) {
+                const uint32_t hz = (uint32_t)(((uint64_t)150000000u
+                    * (ends[i] * 4u + 2u)) / 768000u);
+                lengths[i] = format_khz(hz, labels[i]);
+            }
+        }
         const unsigned ends[3] = { SIG_TONE_BAND_MIN, SIG_TONE_BAND_MID,
                                    SIG_TONE_BAND_MAX };
         for (unsigned i = 0; i < 3; ++i) {

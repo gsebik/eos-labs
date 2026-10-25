@@ -17,9 +17,9 @@ enum {
 /* The band range the generator and the frequency bar both cover: low enough to
  * fit the PWM counter, high enough to stay below the 25 kHz Nyquist limit. */
 enum {
-    SIG_TONE_BAND_MIN = 3,      /* about 2.3 kHz */
-    SIG_TONE_BAND_MAX = 30,     /* about 23.4 kHz */
-    SIG_TONE_BAND_MID = 16,     /* about 12.9 kHz, the middle of the sweep */
+    SIG_TONE_BAND_MIN = 3,      /* 2.73 kHz */
+    SIG_TONE_BAND_MAX = 30,     /* 23.83 kHz */
+    SIG_TONE_BAND_MID = 16,     /* 12.89 kHz, the middle of the sweep */
 };
 
 /* One computed spectrum. All members are private to the caller until the

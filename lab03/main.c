@@ -2,7 +2,7 @@
  * shared spectrum.
  *
  *   processing_task  priority 3  blocks on a descriptor, computes, publishes
- *   display_task     priority 2  every 100 ms, copies the spectrum and draws
+ *   display_task     priority 2  every 50 ms, copies the spectrum and draws
  *   settings_task    priority 1  every 20 ms, polls buttons, writes settings
  *   reporting_task   priority 1  every second, prints counters and CPU shares
  *
@@ -118,8 +118,12 @@ static void spectrum_release(void)
 {
 #if EOS_SIG_RTOS
     const uint32_t held = (uint32_t)(time_us_64() - spectrum_taken_us);
+    /* Record the release while this task still owns the lock. Giving it wakes a
+     * higher-priority waiter, which may run, detect a miss and close the trace
+     * before this task runs again - a record placed after the give can be lost. */
+    sig_trace(SIG_SPECTRUM_GIVE,
+              (uint32_t)uxTaskGetTaskNumber(xTaskGetCurrentTaskHandle()), held, 0);
     require_success(xSemaphoreGive(spectrum_mutex));
-    sig_trace(SIG_SPECTRUM_GIVE, (uint32_t)uxTaskGetTaskNumber(xTaskGetCurrentTaskHandle()), held, 0);
 #endif
 }
 
@@ -367,9 +371,12 @@ static void processing_task(void *unused)
 static void display_task(void *unused)
 {
     (void)unused;
+    /* vTaskDelayUntil, not vTaskDelay: the frame is due on a fixed 50 ms grid,
+     * so the period does not stretch by however long the drawing took. */
+    TickType_t release = xTaskGetTickCount();
     for (;;) {
+        vTaskDelayUntil(&release, pdMS_TO_TICKS(EOS_DISPLAY_PERIOD_MS));
         draw_spectrum();
-        vTaskDelay(pdMS_TO_TICKS(EOS_DISPLAY_PERIOD_MS));
     }
 }
 
