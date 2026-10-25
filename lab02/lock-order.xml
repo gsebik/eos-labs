@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nta PUBLIC '-//Uppaal Team//DTD Flat System 1.1//EN'
+  'http://www.it.uu.se/research/group/darts/uppaal/flat-1_2.dtd'>
+<nta>
+  <declaration>bool config_free = true;
+bool logger_free = true;</declaration>
+  <template>
+    <name>WorkerA</name>
+    <location id="a_ready" x="0" y="0"><name>Ready</name></location>
+    <location id="a_one" x="200" y="0"><name>One</name></location>
+    <location id="a_two" x="400" y="0"><name>Two</name></location>
+    <init ref="a_ready"/>
+    <transition>
+      <source ref="a_ready"/><target ref="a_one"/>
+      <label kind="guard">config_free</label>
+      <label kind="assignment">config_free = false</label>
+    </transition>
+    <transition>
+      <source ref="a_one"/><target ref="a_two"/>
+      <label kind="guard">logger_free</label>
+      <label kind="assignment">logger_free = false</label>
+    </transition>
+    <transition>
+      <source ref="a_two"/><target ref="a_ready"/>
+      <label kind="assignment">config_free = true, logger_free = true</label>
+    </transition>
+  </template>
+  <template>
+    <name>WorkerB</name>
+    <location id="b_ready" x="0" y="200"><name>Ready</name></location>
+    <location id="b_one" x="200" y="200"><name>One</name></location>
+    <location id="b_two" x="400" y="200"><name>Two</name></location>
+    <init ref="b_ready"/>
+    <transition>
+      <source ref="b_ready"/><target ref="b_one"/>
+      <label kind="guard">logger_free</label>
+      <label kind="assignment">logger_free = false</label>
+    </transition>
+    <transition>
+      <source ref="b_one"/><target ref="b_two"/>
+      <label kind="guard">config_free</label>
+      <label kind="assignment">config_free = false</label>
+    </transition>
+    <transition>
+      <source ref="b_two"/><target ref="b_ready"/>
+      <label kind="assignment">config_free = true, logger_free = true</label>
+    </transition>
+  </template>
+  <system>A = WorkerA();
+B = WorkerB();
+system A, B;</system>
+  <queries>
+    <query>
+      <formula>A[] not deadlock</formula>
+      <comment>Can every reachable state make a discrete move?
+Inspect a failure trace.</comment>
+    </query>
+    <query>
+      <formula>E&lt;&gt; (A.One and B.One)</formula>
+      <comment>Can both workers hold their different first locks?</comment>
+    </query>
+  </queries>
+</nta>

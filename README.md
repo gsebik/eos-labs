@@ -1,56 +1,41 @@
-# EOS Labs
+# EOS Labs — lab source
 
-Student starter code and checks for Embedded and Operating Systems (ES201). The full student-facing lab manuals live in the main course repository under `docs/Embedded and Operating Systems/Labs/`.
+Source for the Embedded and Operating Systems labs. One directory per lab; the
+course sequence and the student instructions live in the course documentation.
 
-The repository contains starter code, instruments, and checks—no reference solutions. The primary station is the EP-0172 + Pico 2 W; PicoBot-specific work is a later extension, except for a network-lab variant where the same stack can be reused.
+| Lab | Directory | Guide | Build targets |
+|---|---|---|---|
+| L1 | [`lab01/`](lab01/) | Kernel and timing | `lab01_calibration`, `lab01_mode1`…`lab01_mode4` |
+| L2 | [`lab02/`](lab02/) | Communication and sharing | `lab02_mode1`…`lab02_mode4` |
+| L3 | [`lab03/`](lab03/) | Spectrum instrument | `lab03_instrument_rtos`, `lab03_instrument_foreground`, `lab03_priority_inheritance` |
+| L4 | [`lab04/`](lab04/) | Multicore | `lab04_mode1`…`lab04_mode3` |
+| L5 | — | Networking | built from the guide |
 
-## Get the source
+L5 has no starter directory: that lab builds its project from code in the guide,
+because the radio and lwIP configuration are part of what it teaches.
+
+The primary station is a Pico 2 W on the EP-0172 carrier with a PicoGremlin.
+L1–L4 build against **FreeRTOS V11.3.1** with its RP2350 Arm port; set
+`FREERTOS_KERNEL_PATH` to that checkout (the lab manual shows how to get it).
+
+## Getting the source
 
 ```sh
 git clone https://github.com/gsebik/eos-labs.git
+cd eos-labs
 ```
 
-```sh
-cd eos-labs/lab03-instrument
-```
+Students work from the clone. Each guide names the directory to build and the
+target names above; builds need no board, and building is not hardware
+verification.
 
-The 50 kS/s instrument samples GP28, fed by the selectable GP22 square-wave
-output through a jumper, computes a 256-point FFT and displays frequency bands.
-See the lab manual for wiring, configuration, the experiment sequence and the
-evidence to retain.
+## Report images
 
-## Pilot status
+L3 also ships prebuilt images for its reported faults. They are release
+downloads, not clone contents: the repository holds the source, the release holds
+the binaries. Each image has a SHA-256 in the sheet that accompanies it.
 
-The current L3 spectrum-instrument project is in
-[`lab03-instrument/`](lab03-instrument/). It is supplied as a complete directory:
-students work from the checkout rather than copy driver listings from a page.
-Its manual, maintained in the course documentation repository, gives the
-experiment sequence and the evidence to retain. Code remains authoritative here.
+## What is not here
 
-The existing Lab 1 pilot below is retained; the L3 addition does not replace
-or overwrite those exercises. Student starter repository: [gsebik/eos-labs](https://github.com/gsebik/eos-labs).
-Record the commit or tag you use before collecting evidence. Reference firmware
-is supplied separately by the lecturer.
-
-Lab 1 is being piloted as short exercise sets. Each exercise follows:
-
-1. predict the behavior or measurement (recorded in the course-docs lab report);
-2. complete, fix, or modify a small prepared project;
-3. build and run using `picolab`;
-4. record the measurement and its conditions in the course-docs logbook;
-5. validate and explain the result.
-
-The first checker is deliberately small: firmware emits `@@CHECK` records and `tools/check.py` validates them against per-exercise TOML expectations. No build/flash orchestration or rustlings-style progress tool yet.
-
-## Toolchain
-
-- Pico SDK: set `PICO_SDK_PATH`.
-- Raspberry Pi FreeRTOS Kernel fork: set `FREERTOS_KERNEL_PATH`.
-- Board: `pico2_w`.
-- Build: `cmake -S lab1-kernel/01-task-baseline -B build/01-task-baseline -G Ninja && cmake --build build/01-task-baseline`.
-
-Builds require no probe or hardware. Board measurements require the board and instruments listed in the exercise.
-
-## Repositories
-
-Solutions are maintained separately in a lecturer-only repository. No solutions or answer-key data belong here.
+No solutions, no private marking notes and no credentials. Reference firmware and
+answer keys are supplied separately by the lecturer.
