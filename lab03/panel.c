@@ -385,24 +385,30 @@ static void send_strip(unsigned x0, unsigned y0, unsigned w, unsigned h,
 }
 
 /* --- static frame --- */
+/* Paint one glyph row of a whole string: six pixels per character, five of them
+ * carrying the glyph. Drawing only the first character used to truncate every
+ * multi-digit label to its leading digit. */
+static void paint_string(unsigned start, unsigned glyph, const char *text,
+                         uint16_t *out)
+{
+    for (unsigned i = 0; text[i] != '\0'; ++i) {
+        const unsigned bits = glyphs[glyph_index(text[i])][glyph];
+        for (unsigned column = 0; column < 5; ++column) {
+            const unsigned x = start + i * 6 + column;
+            if (x < PANEL_W && (bits & (16u >> column))) out[x] = COLOUR_AXIS;
+        }
+    }
+}
+
 static void compose_axis(unsigned x, unsigned y, uint16_t *out)
 {
     const unsigned glyph = text_row(y, frame_top);
     for (unsigned i = 0; i < AXIS_MARK_COUNT; ++i) {
         const unsigned start = band_column(band_of(axis_marks[i].hz));
-        if (y == frame_top + 1 && x + 0 >= start && x < start + 2) out[x] = COLOUR_AXIS;
-        if (glyph < 7) {
-            const unsigned bits = glyphs[glyph_index(axis_marks[i].text[0])][glyph];
-            const unsigned column = x - start;
-            if (column < 5 && (bits & (16u >> column))) out[x] = COLOUR_AXIS;
-        }
+        if (y == frame_top + 1 && x >= start && x < start + 2) out[x] = COLOUR_AXIS;
+        if (glyph < 7) paint_string(start, glyph, axis_marks[i].text, out);
     }
-    if (glyph < 7 && x >= PANEL_W - 24 && x < PANEL_W - 24 + 18) {
-        const char *unit = "kHz";
-        const unsigned column = x - (PANEL_W - 24);
-        const unsigned bits = glyphs[glyph_index(unit[column / 6])][glyph];
-        if (column % 6 < 5 && (bits & (16u >> (column % 6)))) out[x] = COLOUR_AXIS;
-    }
+    if (glyph < 7) paint_string(PANEL_W - 24, glyph, "kHz", out);
 }
 
 static void compose_scale(unsigned x, unsigned y, uint16_t *out)
@@ -422,15 +428,12 @@ static void compose_scale(unsigned x, unsigned y, uint16_t *out)
     const unsigned glyph = text_row(y, scale_top + 14);
     if (glyph < 7) {
         const char *labels[3] = { "2.3", "12.9", "23.4" };
+        const unsigned lengths[3] = { 3, 4, 4 };
         const unsigned ends[3] = { SIG_TONE_BAND_MIN, SIG_TONE_BAND_MID,
                                    SIG_TONE_BAND_MAX };
         for (unsigned i = 0; i < 3; ++i) {
-            const unsigned start = label_at(band_column(ends[i]), 3);
-            const unsigned column = x >= start ? x - start : 99;
-            if (column < 15) {
-                const unsigned bits = glyphs[glyph_index(labels[i][column / 6])][glyph];
-                if (column % 6 < 5 && (bits & (16u >> (column % 6)))) out[x] = COLOUR_AXIS;
-            }
+            paint_string(label_at(band_column(ends[i]), lengths[i]), glyph,
+                         labels[i], out);
         }
     }
 }
