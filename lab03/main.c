@@ -47,6 +47,7 @@ static uint32_t largest_publication;
 static volatile uint32_t g_fault;
 
 static uint32_t late_blocks;                /* publication later than one period */
+static uint32_t records_requested, records_acked;
 
 /* Sweep state. The tone walks one band per step and reverses at the ends, so
  * the picture moves one bar at a time without any input from the user. */
@@ -112,8 +113,7 @@ static void spectrum_acquire(void)
 #endif
 }
 
-/* Give the spectrum lock back. Called as soon as the copy is complete, so the
- * lock never spans the screen transfer. */
+/* Give the spectrum lock back. */
 static void spectrum_release(void)
 {
 #if EOS_SIG_RTOS
@@ -143,6 +143,25 @@ static void publish_spectrum(const spectrum_result_t *result, uint32_t threshold
     spectrum_release();
 }
 
+/* External record. Every RECORD_EVERY-th block is also sent to a record store
+ * that confirms receipt after about RECORD_ACK_MS. Every record that is sent
+ * must be confirmed: records_acked counts the confirmations. */
+enum { RECORD_EVERY = 16, RECORD_ACK_MS = 5 };
+
+static void store_record(uint32_t job)
+{
+    static unsigned seen;
+    (void)job;
+    if ((++seen % RECORD_EVERY) != 0) return;
+    records_requested++;
+#if EOS_SIG_RTOS
+    vTaskDelay(pdMS_TO_TICKS(RECORD_ACK_MS));
+#else
+    sleep_ms(RECORD_ACK_MS);
+#endif
+    records_acked++;
+}
+
 /* [2] Processing path for one delivered descriptor: read the settings, take the
  * block, compute, release the sample buffer, then publish the private result.
  * The sample buffer is released before publication because the samples have
@@ -158,6 +177,7 @@ static bool process_block(void)
     if (!sig_capture_receive(&block)) return false;
     gpio_put(MARK_WORK, 1);
     const uint64_t start = sig_trace(SIG_WORK_START, block.job, block.id, 0);
+    store_record(block.job);
     spectrum_result_t result;
     sig_dsp_process(block.samples, EOS_DSP_REPEATS, &result);
     const uint64_t finish = sig_trace(SIG_WORK_COMPLETE, block.job, block.id, 0);
@@ -276,26 +296,19 @@ static void sweep_poll(void)
     sig_signal_step(sweep_direction);
 }
 
-/* One CSV line per second with the 32 band values.
- *
- * The spectrum is copied under the lock and printed after it is released: the
- * lock protects the consistency of the copy, not the printing of it. Printing
- * a whole line takes tens of milliseconds at 115200 baud, so doing it while
- * holding the lock would make every other user of the spectrum wait for the
- * console -- including the processing task, which cannot take its next block
- * until it has published this one. */
+/* One CSV line per second with the 32 band values. */
 static void export_spectrum(void)
 {
     spectrum_result_t snapshot;
     spectrum_acquire();
     snapshot = published_spectrum;
-    spectrum_release();
 
     printf("spectrum");
     for (unsigned band = 0; band < SIG_BANDS; ++band) {
         printf(",%.4f", (double)snapshot.bands[band]);
     }
     printf("\n");
+    spectrum_release();
 }
 
 /* Print one status group and the kernel's CPU shares.
@@ -315,6 +328,7 @@ static void report_status(void)
     const uint32_t publish_wait = largest_publish_wait;
     const uint32_t publication = largest_publication;
     const uint32_t late_count = late_blocks;
+    const uint32_t sent = records_requested, acked = records_acked;
     const uint32_t level = level_q15, hits = detections;
     const float checksum = published_spectrum.checksum;
     restore_interrupts(saved);
@@ -329,6 +343,7 @@ static void report_status(void)
            "compute_max_us=%lu draw_max_us=%lu "
            "settings_wait_max_us=%lu publish_wait_max_us=%lu adc_hz=%lu "
            "spi_hz=%lu tone_hz=%lu rows=%u repeats=%u level=%lu detections=%lu "
+           "records_sent=%lu records_acked=%lu "
            "trace=%lu/%lu/%lu "
            "checksum=%.6f\n",
            (unsigned long)response, (unsigned long)publication,
@@ -339,6 +354,7 @@ static void report_status(void)
            (unsigned long)sig_signal_hz(),
            (unsigned)EOS_DISPLAY_ROWS, (unsigned)EOS_DSP_REPEATS,
            (unsigned long)level, (unsigned long)hits,
+           (unsigned long)sent, (unsigned long)acked,
            (unsigned long)g_sig_trace_count,
            (unsigned long)g_sig_trace_truncated,
            (unsigned long)g_sig_trace_frozen,

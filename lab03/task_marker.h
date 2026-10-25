@@ -37,6 +37,7 @@ enum {
     TASK_ID_UI = 3,
     TASK_ID_REPORT = 4,
     TASK_ID_CONTROLLER = 5,
+    TASK_ID_RECORD = 6,
 };
 
 /* Drive the three marker pins with a task number.

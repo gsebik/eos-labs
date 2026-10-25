@@ -7,7 +7,8 @@ not add wires. Channel i is GPIO 2+i for i <= 20, then GP26, GP27 and GP28.
 
 The markers are the ones the firmware drives:
 
-    GP16 heartbeat   GP17 display   GP18 DMA ISR   GP21 DSP work
+    GP17 display   GP18 DMA ISR   GP21 DSP work
+    GP19, GP20, GP16  the number of the task that is running (see --tasks)
 
 This reads the analyzer's own CDC interface (not the UART bridge) and reports
 the width of each marker's pulses, so a pin capture can be compared with the
@@ -18,6 +19,7 @@ Requires pyserial. Usage:
 
     python3 analyzer.py --rate 1000000 --samples 100000
     python3 analyzer.py --channels 17,18,21 --rate 2000000 --samples 200000
+    python3 analyzer.py --tasks --rate 200000 --samples 32768 --svg tasks.svg
 """
 import argparse
 import glob
@@ -27,6 +29,7 @@ import statistics
 import struct
 import sys
 import time
+from pathlib import Path
 
 LA_FRAME_START = bytes([0x55, 0xAA])
 LA_FRAME_END = bytes([0xAA, 0x55])
@@ -40,7 +43,7 @@ MARKERS = {16: 'task_bit2', 17: 'display', 18: 'isr', 19: 'task_bit0',
 # pulse widths. Bit order matches task_marker.h.
 TASK_PINS = (19, 20, 16)
 TASK_NAMES = {0: 'idle', 1: 'processing', 2: 'display', 3: 'settings',
-              4: 'reporting', 5: 'controller'}
+              4: 'reporting', 5: 'controller', 6: 'record'}
 DEFAULT_CHANNELS = [17, 18, 21]
 # The analyzer caps samples by channel width: 8-bit 131072, 16-bit 65536,
 # 24-bit 32768 (LogicAnalyzer.pio startCaptureSimple). A request above the cap
@@ -195,6 +198,44 @@ def task_runs(words, dt_us, bits):
     return runs
 
 
+def tasks_svg(runs, window_us, isr=None):
+    """One lane per task: a bar wherever the pins said that task was running."""
+    names = ['processing', 'display', 'settings', 'reporting', 'record', 'idle']
+    width, left, right, top, lane = 960, 110, 20, 40, 34
+    height = top + lane * len(names) + 60
+    px = lambda t: left + t / window_us * (width - left - right)
+    colours = {'processing': '#2b6cb0', 'display': '#805ad5', 'settings': '#718096',
+               'reporting': '#c05621', 'record': '#2c7a7b', 'idle': '#cbd5e0'}
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
+           f'width="{width}" height="{height}" font-family="sans-serif" font-size="12">',
+           f'<rect width="{width}" height="{height}" fill="white"/>',
+           f'<text x="{left}" y="22" font-weight="bold" font-size="14">'
+           'Which task was running (decoded from the marker pins)</text>']
+    for row, name in enumerate(names):
+        y = top + row * lane
+        out.append(f'<line x1="{left}" x2="{width-right}" y1="{y+lane-4}" y2="{y+lane-4}" '
+                   'stroke="#d0d4da"/>')
+        out.append(f'<text x="{left-8}" y="{y+19}" text-anchor="end">{name}</text>')
+        for run, start, end in runs:
+            if run == name:
+                out.append(f'<rect x="{px(start):.1f}" y="{y+6}" '
+                           f'width="{max(1.2, px(end)-px(start)):.1f}" height="20" '
+                           f'fill="{colours[name]}"><title>{name}: {end-start:.0f} us</title></rect>')
+    ay = top + lane * len(names) + 4
+    out.append(f'<line x1="{left}" x2="{width-right}" y1="{ay}" y2="{ay}" stroke="#2d3748"/>')
+    span_ms = window_us / 1000.0
+    step = 5 if span_ms > 60 else 2 if span_ms > 25 else 1
+    if span_ms > 150:
+        step = 20
+    ms = 0
+    while ms <= span_ms:
+        out.append(f'<text x="{px(ms*1000):.1f}" y="{ay+16}" text-anchor="middle">{ms} ms</text>')
+        ms += step
+    out.append(f'<text x="{(left+width-right)/2}" y="{ay+36}" text-anchor="middle">'
+               'time from the start of the capture</text></svg>')
+    return '\n'.join(out)
+
+
 def task_summary(runs):
     """Total run time and share of the window for each task."""
     totals = {}
@@ -217,7 +258,7 @@ def write_vcd(path, words, dt_us, channels):
     lines = ['$timescale 1us $end', '$scope module logic $end']
     for gpio in names:
         lines.append(f'$var wire 1 c{gpio} gp{gpio} $end')
-    lines.append('$upscope $end', '$enddefinitions $end')
+    lines.extend(['$upscope $end', '$enddefinitions $end'])
     previous = None
     for index, word in enumerate(words):
         values = {gpio: (word >> bits[gpio]) & 1 for gpio in names}
@@ -269,6 +310,8 @@ def main():
     parser.add_argument('--tasks', action='store_true',
                         help='also decode the running-task marker pins '
                              '(GP19, GP20, GP16) and summarize each task share')
+    parser.add_argument('--svg', default=None,
+                        help='draw which task ran when (needs --tasks) as an SVG')
     parser.add_argument('--vcd', default=None,
                         help='write the capture as a VCD file for PulseView/GTKWave')
     parser.add_argument('--json', action='store_true')
@@ -334,6 +377,13 @@ def main():
             print(f"    {len(runs)} task switches in this window")
         print('Pin measurement only: one recorded window, not the trace and not '
               'a worst case.')
+    if args.svg:
+        if not args.tasks:
+            parser.error('--svg needs --tasks')
+        dt_us = 1_000_000.0 / args.rate
+        Path(args.svg).write_text(tasks_svg(task_runs(words, dt_us, bit_map(channels)),
+                                            len(words) * dt_us))
+        print(f'wrote {args.svg}')
     if args.vcd:
         write_vcd(args.vcd, words, 1_000_000.0 / args.rate, channels)
         print(f'wrote {args.vcd}')

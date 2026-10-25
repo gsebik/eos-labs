@@ -14,9 +14,8 @@
  * always meets an owned resource. The gate is opened once for all three tasks,
  * which keeps the measured interval free of any deliberate suspension.
  *
- * The resource is created as an inheritance mutex. A binary semaphore is the
- * same program with one line changed: it has no owner and no inheritance, which
- * is exactly the difference this task is about.
+ * EOS_INHERITANCE_MUTEX selects the kind of object that protects the resource:
+ * a mutex (ON) or a binary semaphore (OFF). Everything else is identical.
  *
  * All work is synthetic and bounded. Nothing is printed inside the measured
  * interval, because printing would itself disturb the schedule being measured.
@@ -27,9 +26,8 @@
 #include "task.h"
 #include "semphr.h"
 
-/* Synthetic CPU demand, in microseconds. These are deliberately small and equal
- * to the lecture's illustrative example so the two can be compared, but the
- * program reports what it actually measured rather than what was requested. */
+/* Synthetic CPU demand, in microseconds. The program reports what it actually
+ * measured rather than what was requested. */
 enum {
     H_WORK_US = 1000,
     M_WORK_US = 3000,
@@ -42,7 +40,7 @@ enum {
     PRIORITY_CONTROLLER = 4,
 };
 
-static SemaphoreHandle_t resource;   /* mutex, or binary semaphore when faulty */
+static SemaphoreHandle_t resource;   /* mutex, or binary semaphore when OFF */
 static SemaphoreHandle_t gate;       /* counting: opens the measured interval  */
 static TaskHandle_t h_handle, m_handle, l_handle, controller_handle;
 
@@ -191,8 +189,6 @@ static void report(void)
     }
     printf("  L highest observed priority = %lu (base %d)\n",
            (unsigned long)l_highest_priority, PRIORITY_L);
-    /* H's wait is what the lecture predicts: about L's remaining work plus H's
-     * own work with an inheritance mutex, and plus M's work without one. */
     for (unsigned i = 0; i + 1 < observation_count; ++i) {
         if (observations[i].task[0] == 'H' && observations[i].event[0] == 'r') {
             const uint32_t request = observations[i].us;
@@ -238,8 +234,6 @@ int main(void)
 #if EOS_INHERITANCE_MUTEX
     resource = xSemaphoreCreateMutex();
 #else
-    /* Deliberately the wrong primitive for task mutual exclusion: a semaphore
-     * has no owner, so the kernel has no one to give priority to. */
     resource = xSemaphoreCreateBinary();
     hard_assert(resource != NULL);
     xSemaphoreGive(resource);

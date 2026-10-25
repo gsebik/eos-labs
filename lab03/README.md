@@ -33,9 +33,14 @@ the file.
 - `panel.c/.h`: the EP-0172 renderer: bars, frequency scale, counters.
 - `trace.c/.h`, `sig_trace.py`: bounded event trace; decode to JSONL or CSV, and
   check a retention window.
-- `status_log.py`: turn a captured console log into one CSV row per status group.
+- `status_log.py`: turn a captured console log into one CSV row per status group,
+  or print the numbers to note (`--summary`).
 - `rta.py`, `model-example.json`: response-time calculator and one input file.
-- `analyzer.py`: PicoGremlin marker capture, for the optional marker work.
+- `sig_view.py`: read a decoded trace as numbers and as pictures (`intervals`,
+  `locks`, `timeline`, `inheritance`); the pictures are plain SVG.
+- `trace_dump.py`: copy the event trace out of the running board and decode it.
+- `analyzer.py`: PicoGremlin marker capture; `--tasks --svg` draws which task
+  ran when.
 
 ## Build and run
 
@@ -61,15 +66,17 @@ Release baseline before comparing timings.
 comparison in Task 3. `lab03_priority_inheritance` is the separate H/M/L
 demonstration; `EOS_INHERITANCE_MUTEX=ON` is the default.
 
-## Report images
+## The reference image
 
-The lab issues prebuilt firmware for the reported faults. They are release
-downloads, not part of this project and not built here. Each sheet records the
-SHA-256 and the source commit; check both before programming one.
+This source is the unit that came back from the field: it has problems. The lab
+asks you to measure them, find the cause and repair it. For comparison the lab
+issues one prebuilt image of the last unit that worked, `l3-baseline.elf`, as a
+release download. It is not built here. Its sheet records the SHA-256; check it
+before programming the image.
 
 ## Content status
 
-The project builds and has been accepted on the EP-0172 station for the baseline
-and both report images. That acceptance does not make this directory a measured
-timing reference for your own board, toolchain or kernel build. Private solutions
-and answer keys do not belong in this repository.
+The project builds, and it and the reference image run on the EP-0172 station.
+That does not make this directory a measured timing reference for your own board,
+toolchain or kernel build. Private solutions and answer keys do not belong in this
+repository.
