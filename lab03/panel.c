@@ -16,6 +16,7 @@
  * On this station 0xE8 is correct. If the picture is ever rotated or mirrored,
  * change only this value and rebuild - nothing else needs to move. */
 #include "panel.h"
+#include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
 
@@ -222,6 +223,7 @@ static unsigned glyph_index(char c)
     if (c == 'T') return GLYPH_T;
     if (c == 'A') return GLYPH_A;
     if (c == 'E') return GLYPH_E;
+    if (c == 'k') return GLYPH_K;
     if (c == ' ') return GLYPH_SPACE;
     return GLYPH_UNKNOWN;
 }
@@ -305,13 +307,22 @@ static void send_row(void)
     bytes(row_bytes, sizeof row_bytes);
 }
 
-/* Convert one band's strength into a bar height in pixels. The first test also
- * rejects NaN and the second rejects infinity, so the cast cannot overflow. */
+/* Convert one band's strength into a bar height in pixels.
+ *
+ * Band strengths are log1p values, and an idle band still measures about 2-4
+ * because of converter noise and window leakage. Drawn from zero, that floor
+ * would fill a third of the plot with bars that carry no signal, so the bottom
+ * FLOOR units are treated as "nothing here". The scale is therefore
+ * FLOOR..10 rather than 0..10; it is a display choice, not a measurement.
+ *
+ * The first test also rejects NaN and the second rejects infinity, so the cast
+ * cannot overflow. */
+enum { BAR_FLOOR = 4 };            /* log1p units treated as the noise floor */
 static unsigned bar_pixels(float level, unsigned rows)
 {
-    if (!(level > 0.0f)) return 0;
+    if (!(level > (float)BAR_FLOOR)) return 0;
     if (level >= 10.0f) return rows;
-    return (unsigned)(level * (float)rows / 10.0f);
+    return (unsigned)((level - (float)BAR_FLOOR) * (float)rows / (10.0f - BAR_FLOOR));
 }
 
 /* The renderer keeps the tone for the axis tick and the readout, so the frame
@@ -342,22 +353,216 @@ static unsigned label_at(unsigned column, unsigned length)
     return left + width > PANEL_W ? PANEL_W - width : left;
 }
 
+/* ---- Incremental drawing ------------------------------------------------
+ *
+ * The panel refreshes its own glass continuously, and a whole-frame write lasts
+ * about 39 ms of SPI time at the default size - several panel refreshes. A
+ * full rewrite therefore lets the panel show the top of one frame and the
+ * bottom of the next: the tearing seam. Writing only what changed on each frame
+ * keeps every write far shorter than a panel refresh, so the seam is gone
+ * without needing the panel's TE signal.
+ *
+ * The static parts of the frame (axis, labels, frequency scale) are drawn once.
+ * Each frame then redraws the bars whose height changed, the marker if it
+ * moved, and the readout if its text changed.
+ */
+static unsigned frame_top, plot_top, plot_bottom, scale_top, text_top;
+static int last_marker = -1;      /* band the amber marker was drawn at */
+static char last_readout[64];     /* text currently on the readout row */
+
+/* Send one horizontal strip of the frame. `compose` paints the strip's pixels:
+ * x is relative to the strip, y is the absolute frame row. Rows are written in
+ * the controller's address order, which runs upward on this panel, so the last
+ * frame row of the strip is sent first. */
+typedef void (*row_painter)(unsigned x, unsigned y, uint16_t *out);
+
+static void send_strip(unsigned x0, unsigned y0, unsigned w, unsigned h,
+                       row_painter compose)
+{
+    if (!w || !h) return;
+    open_window(x0, y0, x0 + w - 1, y0 + h - 1);
+    for (unsigned step = 0; step < h; ++step) {
+        const unsigned y = y0 + h - 1 - step;
+        for (unsigned x = 0; x < w; ++x) row_pixels[x] = COLOUR_BLACK;
+        compose(0, y, row_pixels);
+        for (unsigned x = 0; x < w; ++x) {
+            row_bytes[2 * x] = (uint8_t)(row_pixels[x] >> 8);
+            row_bytes[2 * x + 1] = (uint8_t)(row_pixels[x] & 255);
+        }
+        bytes(row_bytes, w * 2);
+    }
+}
+
+/* --- static frame --- */
+static void compose_axis(unsigned x, unsigned y, uint16_t *out)
+{
+    const unsigned glyph = text_row(y, frame_top);
+    for (unsigned i = 0; i < AXIS_MARK_COUNT; ++i) {
+        const unsigned start = band_column(band_of(axis_marks[i].hz));
+        if (y == frame_top + 1 && x + 0 >= start && x < start + 2) out[x] = COLOUR_AXIS;
+        if (glyph < 7) {
+            const unsigned bits = glyphs[glyph_index(axis_marks[i].text[0])][glyph];
+            const unsigned column = x - start;
+            if (column < 5 && (bits & (16u >> column))) out[x] = COLOUR_AXIS;
+        }
+    }
+    if (glyph < 7 && x >= PANEL_W - 24 && x < PANEL_W - 24 + 18) {
+        const char *unit = "kHz";
+        const unsigned column = x - (PANEL_W - 24);
+        const unsigned bits = glyphs[glyph_index(unit[column / 6])][glyph];
+        if (column % 6 < 5 && (bits & (16u >> (column % 6)))) out[x] = COLOUR_AXIS;
+    }
+}
+
+static void compose_scale(unsigned x, unsigned y, uint16_t *out)
+{
+    const unsigned row = y - scale_top;
+    const unsigned first = band_column(SIG_TONE_BAND_MIN);
+    const unsigned last = band_column(SIG_TONE_BAND_MAX);
+    if (row >= 2 && row < 4 && x >= first && x <= last) out[x] = COLOUR_AXIS;
+    if (row >= 2 && row < 9) {
+        for (unsigned i = 0; i < 3; ++i) {
+            const unsigned ends[3] = { SIG_TONE_BAND_MIN, SIG_TONE_BAND_MID,
+                                       SIG_TONE_BAND_MAX };
+            const unsigned tick = band_column(ends[i]);
+            if (x == tick || x == tick + 1) out[x] = COLOUR_AXIS;
+        }
+    }
+    const unsigned glyph = text_row(y, scale_top + 14);
+    if (glyph < 7) {
+        const char *labels[3] = { "2.3", "12.9", "23.4" };
+        const unsigned ends[3] = { SIG_TONE_BAND_MIN, SIG_TONE_BAND_MID,
+                                   SIG_TONE_BAND_MAX };
+        for (unsigned i = 0; i < 3; ++i) {
+            const unsigned start = label_at(band_column(ends[i]), 3);
+            const unsigned column = x >= start ? x - start : 99;
+            if (column < 15) {
+                const unsigned bits = glyphs[glyph_index(labels[i][column / 6])][glyph];
+                if (column % 6 < 5 && (bits & (16u >> (column % 6)))) out[x] = COLOUR_AXIS;
+            }
+        }
+    }
+}
+
+/* --- per-frame pieces --- */
+static unsigned paint_band, paint_rows, paint_height;
+static void compose_bar(unsigned x, unsigned y, uint16_t *out)
+{
+    const unsigned above_floor = plot_bottom - 1 - y;
+    (void) paint_band;
+    if (above_floor < paint_height && x < BAR_W) out[x] = COLOUR_BAR;
+    (void) paint_rows;
+}
+
+static int paint_marker_band;
+static void compose_marker(unsigned x, unsigned y, uint16_t *out)
+{
+    const unsigned column = x;
+    const unsigned target = band_column((unsigned)paint_marker_band);
+    if (y < scale_top) {
+        if (y == frame_top + 1 && (column == target || column == target + 1)) {
+            out[x] = COLOUR_TONE;
+        }
+    } else if (y >= scale_top + 1 && y < scale_top + 9
+               && column + 0 >= target - 1 && column <= target + 1) {
+        out[x] = COLOUR_TONE;
+    }
+}
+
+static const char *paint_text;
+static unsigned paint_text_x;
+static void compose_readout(unsigned x, unsigned y, uint16_t *out)
+{
+    const unsigned glyph = text_row(y, text_top);
+    if (glyph >= 7) return;
+    const unsigned column = (x >= paint_text_x) ? x - paint_text_x : 999;
+    for (unsigned i = 0; paint_text[i] != '\0'; ++i) {
+        if (column < i * 6 + 5 && column >= i * 6) {
+            const unsigned bit = column - i * 6;
+            const unsigned bits = glyphs[glyph_index(paint_text[i])][glyph];
+            if (bits & (16u >> bit)) out[x] = COLOUR_AXIS;
+        }
+    }
+}
+
+/* Draw the parts of the frame that never change. */
+static void draw_static(void)
+{
+    send_strip(0, frame_top, PANEL_W, AXIS_H, compose_axis);
+    send_strip(0, scale_top, PANEL_W, SCALE_H, compose_scale);
+}
+
+/* Redraw one band's column between its old and new height. */
+static void draw_bar(unsigned band, unsigned rows, unsigned old_height,
+                     unsigned new_height)
+{
+    const unsigned tallest = old_height > new_height ? old_height : new_height;
+    if (!tallest) return;
+    paint_height = new_height;
+    paint_rows = rows;
+    send_strip(band * BAND_PITCH, plot_bottom - tallest, BAR_W, tallest,
+               compose_bar);
+}
+
+/* Move the amber marker: erase at the old band, draw at the new one. */
+static void draw_marker(int band)
+{
+    if (band == last_marker) return;
+    const int previous = last_marker;
+    paint_marker_band = previous;
+    if (previous >= 0) {
+        send_strip(0, frame_top + 1, PANEL_W, 1, compose_marker);
+        send_strip(0, scale_top + 1, PANEL_W, 8, compose_marker);
+    }
+    paint_marker_band = band;
+    send_strip(0, frame_top + 1, PANEL_W, 1, compose_marker);
+    send_strip(0, scale_top + 1, PANEL_W, 8, compose_marker);
+    last_marker = band;
+}
+
+/* Redraw the readout row, but only when its text changed. */
+static void draw_readout(const char *text)
+{
+    if (strcmp(text, last_readout) == 0) return;
+    paint_text = text;
+    paint_text_x = 6;
+    send_strip(0, text_top, 300, TEXT_H, compose_readout);
+    strncpy(last_readout, text, sizeof last_readout - 1);
+    last_readout[sizeof last_readout - 1] = '\0';
+}
+
 void sig_panel_draw(const spectrum_result_t *result, unsigned rows,
                     unsigned lost, unsigned late)
 {
     if (rows > PLOT_MAX) rows = PLOT_MAX;
-    for (unsigned band = 0; band < SIG_BANDS; ++band) {
-        bar_height[band] = bar_pixels(result->bands[band], rows);
+
+    static unsigned drawn_rows = 0;
+    if (rows != drawn_rows) {
+        /* Geometry changed: start from a clean panel and redraw the static
+         * parts, rather than trying to patch a differently sized frame. */
+        rectangle(0, 0, PANEL_W, PANEL_H, COLOUR_BLACK);
+        const unsigned frame_height = AXIS_H + rows + SCALE_H + TEXT_H;
+        frame_top = (PANEL_H - frame_height) / 2;
+        plot_top = frame_top + AXIS_H;
+        plot_bottom = plot_top + rows;
+        scale_top = plot_bottom;
+        text_top = scale_top + SCALE_H;
+        for (unsigned band = 0; band < SIG_BANDS; ++band) bar_height[band] = 0;
+        last_marker = -1;
+        last_readout[0] = '\0';
+        drawn_rows = rows;
+        draw_static();
     }
-    /* The panel is taller than the frame, so the frame is centred: a deliberate
-     * margin instead of an instrument squeezed against the top edge. */
-    const unsigned frame_height = AXIS_H + rows + SCALE_H + TEXT_H;
-    const unsigned frame_top = (PANEL_H - frame_height) / 2;
-    const unsigned plot_top = frame_top + AXIS_H;
-    const unsigned plot_bottom = plot_top + rows;
-    const unsigned scale_top = plot_bottom;
-    const unsigned text_top = scale_top + SCALE_H;
-    const unsigned frame_bottom = text_top + TEXT_H;
+
+    for (unsigned band = 0; band < SIG_BANDS; ++band) {
+        const unsigned height = bar_pixels(result->bands[band], rows);
+        if (height != bar_height[band]) {
+            draw_bar(band, rows, bar_height[band], height);
+            bar_height[band] = height;
+        }
+    }
+
+    draw_marker((int)band_of(tone_hz));
 
     char readout[64];
     unsigned length = format_khz(tone_hz, readout);
@@ -368,91 +573,7 @@ void sig_panel_draw(const spectrum_result_t *result, unsigned rows,
     for (unsigned i = 0; late_text[i] != '\0'; ++i) readout[length++] = late_text[i];
     length = append_digits(readout, length, late, 1);
     readout[length] = '\0';
-
-    unsigned mark_band[AXIS_MARK_COUNT];
-    for (unsigned i = 0; i < AXIS_MARK_COUNT; ++i) {
-        mark_band[i] = band_of(axis_marks[i].hz);
-    }
-    const unsigned tone_column = band_column((unsigned)(band_of(tone_hz)));
-    const unsigned marker = tone_column;
-
-    open_window(0, frame_top, PANEL_W - 1, frame_bottom - 1);
-    /* Rows are written in the controller's address order, which runs from the
-     * bottom of the glass upward on this panel, so the picture is composed from
-     * its last row to its first. */
-    for (unsigned step = 0; step < frame_height; ++step) {
-        const unsigned y = frame_bottom - 1 - step;
-        for (unsigned x = 0; x < PANEL_W; ++x) row_pixels[x] = COLOUR_BLACK;
-        if (y < plot_top) {
-            const unsigned glyph = text_row(y - frame_top, 0);
-            for (unsigned i = 0; i < AXIS_MARK_COUNT; ++i) {
-                const unsigned start = mark_band[i] * BAND_PITCH;
-                if (y == frame_top + 1) {
-                    row_pixels[start] = COLOUR_AXIS;
-                    row_pixels[start + 1] = COLOUR_AXIS;
-                }
-                if (glyph < 7) put_text(start, glyph, axis_marks[i].text);
-            }
-            if (y == frame_top + 1) {
-                /* Amber tick under the band the generator is producing. */
-                row_pixels[tone_column] = COLOUR_TONE;
-                row_pixels[tone_column + 1] = COLOUR_TONE;
-            }
-            if (glyph < 7) put_text(PANEL_W - 24, glyph, "kHz");
-        } else if (y < plot_bottom) {
-            /* Bars grow upward from the baseline, so a taller bar reaches
-             * closer to the axis. Every plot row is written, so a shrinking
-             * bar erases the rows above it. */
-            const unsigned above_floor = plot_bottom - 1 - y;
-            for (unsigned band = 0; band < SIG_BANDS; ++band) {
-                const uint16_t color =
-                    above_floor < bar_height[band] ? COLOUR_BAR : COLOUR_BLACK;
-                for (unsigned x = band * BAND_PITCH; x < band * BAND_PITCH + BAR_W; ++x) {
-                    row_pixels[x] = color;
-                }
-            }
-        } else if (y < text_top) {
-            /* Frequency bar: a track from the lowest to the highest band the
-             * generator can produce, with a marker that slides as the sweep
-             * runs, and labels for the ends and the middle. */
-            const unsigned row = y - scale_top;
-            const char *labels[3] = { "2.3", "12.9", "23.4" };
-            const unsigned ends[3] = { SIG_TONE_BAND_MIN, SIG_TONE_BAND_MID,
-                                       SIG_TONE_BAND_MAX };
-            if (row >= 2 && row < 4) {
-                /* Only the range the generator can reach is drawn. */
-                const unsigned first = band_column(SIG_TONE_BAND_MIN);
-                const unsigned last = band_column(SIG_TONE_BAND_MAX);
-                for (unsigned x = first; x <= last && x < PANEL_W; ++x) {
-                    row_pixels[x] = COLOUR_AXIS;
-                }
-            }
-            if (row >= 2 && row < 9) {
-                for (unsigned i = 0; i < 3; ++i) {
-                    const unsigned tick = band_column(ends[i]);
-                    row_pixels[tick] = COLOUR_AXIS;
-                    row_pixels[tick + 1] = COLOUR_AXIS;
-                }
-            }
-            if (row >= 1 && row < 9) {
-                for (unsigned d = 0; d < 3; ++d) {
-                    const unsigned x = marker + d - 1;
-                    if (x < PANEL_W) row_pixels[x] = COLOUR_TONE;
-                }
-            }
-            const unsigned label_top = scale_top + 14;
-            const unsigned glyph = text_row(y, label_top);
-            if (glyph < 7) {
-                for (unsigned i = 0; i < 3; ++i) {
-                    put_text(label_at(band_column(ends[i]), 3), glyph, labels[i]);
-                }
-            }
-        } else {
-            const unsigned glyph = text_row(y, text_top);
-            if (glyph < 7) put_text(6, glyph, readout);
-        }
-        send_row();
-    }
+    draw_readout(readout);
 }
 
 uint32_t sig_panel_spi_hz(void) { return spi_hz; }

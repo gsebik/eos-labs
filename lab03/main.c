@@ -216,7 +216,11 @@ static void draw_spectrum(void)
     const uint64_t finish = sig_trace(SIG_DISPLAY_DONE, 0, 0, 0);
     const uint32_t elapsed = (uint32_t)(finish - start);
     gpio_put(MARK_DISPLAY, 0);
-    if (elapsed > largest_draw) largest_draw = elapsed;
+    /* The first frame also draws the axis and the scale, so it is not
+     * comparable with the incremental frames that follow. */
+    static bool first_frame = true;
+    if (!first_frame && elapsed > largest_draw) largest_draw = elapsed;
+    first_frame = false;
 }
 
 /* GP14/GP15 are the station buttons: external pull-ups, active low.
@@ -257,6 +261,28 @@ static void sweep_poll(void)
     const int next = (int)sig_signal_band() + sweep_direction;
     if (next > SIG_TONE_BAND_MAX || next < SIG_TONE_BAND_MIN) sweep_direction = -sweep_direction;
     sig_signal_step(sweep_direction);
+}
+
+/* One CSV line per second with the 32 band values.
+ *
+ * The spectrum is copied under the lock and printed after it is released: the
+ * lock protects the consistency of the copy, not the printing of it. Printing
+ * a whole line takes tens of milliseconds at 115200 baud, so doing it while
+ * holding the lock would make every other user of the spectrum wait for the
+ * console -- including the processing task, which cannot take its next block
+ * until it has published this one. */
+static void export_spectrum(void)
+{
+    spectrum_result_t snapshot;
+    spectrum_acquire();
+    snapshot = published_spectrum;
+    spectrum_release();
+
+    printf("spectrum");
+    for (unsigned band = 0; band < SIG_BANDS; ++band) {
+        printf(",%.4f", (double)snapshot.bands[band]);
+    }
+    printf("\n");
 }
 
 /* Print one status group and the kernel's CPU shares.
@@ -363,6 +389,7 @@ static void reporting_task(void *unused)
         report_status();
         vTaskGetRunTimeStats(stats);
         printf("%s", stats);
+        export_spectrum();
     }
 }
 
