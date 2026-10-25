@@ -14,6 +14,14 @@ enum {
     SIG_BANDS = 32,     /* displayed bands, 4 FFT bins each */
 };
 
+/* The band range the generator and the frequency bar both cover: low enough to
+ * fit the PWM counter, high enough to stay below the 25 kHz Nyquist limit. */
+enum {
+    SIG_TONE_BAND_MIN = 3,      /* about 2.3 kHz */
+    SIG_TONE_BAND_MAX = 30,     /* about 23.4 kHz */
+    SIG_TONE_BAND_MID = 16,     /* about 12.9 kHz, the middle of the sweep */
+};
+
 /* One computed spectrum. All members are private to the caller until the
  * result is published, so a reader may keep a copy of this struct safely. */
 typedef struct {

@@ -21,9 +21,7 @@ enum {
     SIG_BLOCK = 256,        /* samples per block, and the FFT window length */
     SIG_POOL = 3,           /* sample buffers: enough to overlap one block */
     SIG_ADC_CHANNEL = 2,    /* ADC channel 2 is GP28 */
-    SIG_TONE_BAND_DEFAULT = 16, /* middle of the sweep: about 11.6 kHz */
-    SIG_TONE_BAND_MIN = 3,      /* about 2.3 kHz; lower would overflow the PWM */
-    SIG_TONE_BAND_MAX = 30,     /* about 23.4 kHz, below the 25 kHz Nyquist */
+    SIG_TONE_BAND_DEFAULT = SIG_TONE_BAND_MID,
     SIG_BLOCK_PERIOD_US = SIG_BLOCK * 1000000 / SIG_RATE_HZ,  /* 5120 us */
     SIG_ISR_MARK_PIN = 18,  /* analyzer marker around the DMA handler body */
 };

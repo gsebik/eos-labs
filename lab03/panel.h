@@ -15,16 +15,6 @@
  * Call before the first draw, from the display task or before it starts. */
 void sig_panel_init(void);
 
-/* One column of the per-block history strip: which band the block's peak was
- * in, or `present == 0` when that block never arrived. */
-enum { SIG_PANEL_HISTORY = 480 };
-typedef struct {
-    const uint8_t *band;     /* band index per column, 0..SIG_BANDS-1 */
-    const uint8_t *present;  /* 1 when the block was processed, 0 when lost */
-    unsigned count;          /* number of columns */
-    unsigned lost, late;     /* counters shown beside the tone readout */
-} sig_panel_history_t;
-
 /* Draw one complete frame from a caller-owned spectrum.
  *
  * `rows` is the tallest bar in pixels and therefore also the plot height and
@@ -33,10 +23,11 @@ typedef struct {
  *
  * @param result spectrum to draw, typically a private snapshot
  * @param rows plot height in pixels, clamped to the panel's usable area
- * @param history per-block history and counters, drawn below the bars
+ * @param lost input blocks lost since reset, shown as LOST
+ * @param late results published later than one block period, shown as LATE
  */
 void sig_panel_draw(const spectrum_result_t *result, unsigned rows,
-                    const sig_panel_history_t *history);
+                    unsigned lost, unsigned late);
 
 /* Tell the renderer which tone the generator is producing.
  *

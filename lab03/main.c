@@ -46,13 +46,6 @@ static uint32_t largest_draw, largest_settings_wait, largest_publish_wait;
 static uint32_t largest_publication;
 static volatile uint32_t g_fault;
 
-/* One entry per processed block, so the display can draw what happened between
- * frames. A block that never arrived leaves no entry, which is how a gap in
- * the picture maps to lost input rather than to a quiet signal. */
-enum { HISTORY_SLOTS = 512, HISTORY_COLUMNS = 480 };
-static uint8_t history_band[HISTORY_SLOTS];
-static uint32_t history_job[HISTORY_SLOTS];
-static volatile uint32_t history_next;      /* next block number to be written */
 static uint32_t late_blocks;                /* publication later than one period */
 
 /* Sweep state. The tone walks one band per step and reverses at the ends, so
@@ -168,10 +161,6 @@ static bool process_block(void)
 
     const uint32_t saved = save_and_disable_interrupts();
     processed++;
-    const uint32_t slot = block.job % HISTORY_SLOTS;
-    history_band[slot] = (uint8_t)(result.peak_bin / 4u);
-    history_job[slot] = block.job;
-    history_next = block.job + 1;
     const uint32_t buffer_return = (uint32_t)(release - block.ready_us);
     const uint32_t publication = (uint32_t)(published - block.ready_us);
     /* The instrument promises a result within one block period. Missing that
@@ -216,26 +205,14 @@ static void draw_spectrum(void)
     sig_panel_set_tone(sig_signal_hz());
     const uint64_t start = sig_trace(SIG_DISPLAY_START, 0, EOS_DISPLAY_ROWS, 0);
     spectrum_result_t snapshot;
-    static uint8_t columns[HISTORY_COLUMNS], present[HISTORY_COLUMNS];
-    sig_panel_history_t history = {
-        .band = columns, .present = present, .count = HISTORY_COLUMNS,
-    };
     spectrum_acquire();
     snapshot = published_spectrum;
     spectrum_release();
     const uint32_t saved = save_and_disable_interrupts();
-    const uint32_t head = history_next;
-    history.lost = sig_capture_stats().dropped;
-    history.late = late_blocks;
-    for (unsigned column = 0; column < HISTORY_COLUMNS; ++column) {
-        const uint32_t job = head - HISTORY_COLUMNS + column;
-        const uint32_t slot = job % HISTORY_SLOTS;
-        const bool known = head >= HISTORY_COLUMNS && history_job[slot] == job;
-        present[column] = known ? 1 : 0;
-        columns[column] = known ? history_band[slot] : 0;
-    }
+    const uint32_t lost = sig_capture_stats().dropped;
+    const uint32_t late = late_blocks;
     restore_interrupts(saved);
-    sig_panel_draw(&snapshot, EOS_DISPLAY_ROWS, &history);
+    sig_panel_draw(&snapshot, EOS_DISPLAY_ROWS, lost, late);
     const uint64_t finish = sig_trace(SIG_DISPLAY_DONE, 0, 0, 0);
     const uint32_t elapsed = (uint32_t)(finish - start);
     gpio_put(MARK_DISPLAY, 0);
