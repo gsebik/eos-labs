@@ -6,7 +6,7 @@ The instrument is supplied; the lab work is the partition, the placement
 comparison and the cross-core handoff.
 
 The manual is the course guide, *L4 — Multicore RTOS design: placing work on two
-cores*. This file only covers building the project.
+cores*. This file covers building the project and recording the UART exchange.
 
 ## Build
 
@@ -45,6 +45,31 @@ a previous task cannot leak into the next measurement.
 
 The ring's four `ORDER_*` macros are deliberately `memory_order_relaxed`; Task 3
 asks you to replace them and justify each one.
+
+## PC capture
+
+Close any UART monitor before running the PC tool. Use the probe's stable
+`-if01` port, not the analyzer's `-if03` interface:
+
+```sh
+python3 pc_station.py --port /dev/serial/by-id/your-probe-if01 \
+    --mode query --count 5 --gap-ms 300 --status \
+    --raw-log l4-query.jsonl --json l4-query.json
+```
+
+`--status` retains the periodic board command counters and waits for a report
+after the replies before sending again. The JSON result attaches these status
+snapshots to the last reply of each request. The JSONL trace records all received
+bytes and transmitted requests with host timestamps, including startup and gaps.
+
+`cmd_n` and `cmd_max_us` reset every report. They describe a report window, not
+a reply identifier; a ten-reply burst is one command. Do not treat an aggregate
+maximum as a matched per-command measurement. See Task 4 for the timing boundaries.
+
+If a reply or command-status report is unavailable, the tool exits nonzero and
+keeps the captured evidence. It stops sending after a timeout, so a late reply
+cannot be mistaken for a new request. Use distinct capture filenames per run.
+`--response-timeout` and `--status-timeout` set the respective waits in seconds.
 
 ## Hardware
 
