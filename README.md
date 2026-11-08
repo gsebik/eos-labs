@@ -8,7 +8,8 @@ course sequence and the student instructions live in the course documentation.
 | L1 | [`lab01/`](lab01/) | Kernel and timing | `lab01_calibration`, `lab01_mode1`…`lab01_mode4` |
 | L2 | [`lab02/`](lab02/) | Communication and sharing | `lab02_mode1`…`lab02_mode4` |
 | L3 | [`lab03/`](lab03/) | Spectrum instrument | `lab03_instrument_rtos`, `lab03_instrument_foreground`, `lab03_priority_inheritance` |
-| L4 | [`lab04/`](lab04/) | Multicore | `lab04_mode1`…`lab04_mode3` |
+| L4 | [`lab04-condition/`](lab04-condition/) (draft) | Multicore design | `lab04_condition` |
+| L4 (previous) | [`lab04/`](lab04/) | AMP then SMP | `lab04_mode1`…`lab04_mode3` |
 | L5 | — | Networking | built from the guide |
 
 L5 has no starter directory: that lab builds its project from code in the guide,

@@ -19,7 +19,13 @@
 #define configRUN_FREERTOS_SECURE_ONLY          1
 #define configMAX_SYSCALL_INTERRUPT_PRIORITY    16
 
-#if EOS_LAB_MODE == 3
+/* Placement indices for mode 5: 0 SINGLE, 1 AMP, 2 SMP_PINNED, 3 SMP_FREE. */
+#ifndef EOS_PLACEMENT
+#define EOS_PLACEMENT                           0
+#endif
+
+/* Mode 3 and the two SMP placements of mode 5 give both cores to one kernel. */
+#if EOS_LAB_MODE == 3 || (EOS_LAB_MODE == 5 && EOS_PLACEMENT >= 2)
 #define configNUMBER_OF_CORES                   2
 #define configUSE_CORE_AFFINITY                 1
 #define configRUN_MULTIPLE_PRIORITIES           1
