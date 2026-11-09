@@ -31,12 +31,13 @@ set(EOS_UI_PERIOD_MS 20 CACHE STRING "Settings update period")
 set(EOS_ALARM_PERIOD_MS 20 CACHE STRING "Alarm task period in ms")
 set(EOS_ALARM_DEADLINE_US 2000 CACHE STRING "Alarm deadline in us")
 set(EOS_ALARM_PRIORITY 4 CACHE STRING "Alarm task priority")
-set(EOS_SEED_SMP_BUG 1 CACHE STRING "1 = leave the seeded unlocked shared counter")
+set(EOS_SEED_SMP_BUG 0 CACHE STRING "1 = optional unsafe unlocked-counter demonstration; off for measured lab route")
 set(EOS_DSP_RAM 0 CACHE STRING "1 = place sig_dsp_process in SRAM")
 set(EOS_SCHED_MODE 0 CACHE STRING "1 = build A/B/C scheduling mode in lab04_condition")
 set(EOS_SCHED_PLACEMENT 0 CACHE STRING "Scheduler preset: 0 single, 1 partitioned, 2 global")
 set(EOS_SCHED_DHALL 0 CACHE STRING "1 = Dhall-style A/B/C set")
 set(EOS_SCHED_LOOP_PER_MS 13600 CACHE STRING "CPU-loop iterations per millisecond at 150 MHz")
+set(EOS_SCHED_TRACE 0 CACHE STRING "1 = record and later dump a bounded early-run scheduler trace")
 set(EOS_REPORT_ENABLE 1 CACHE STRING "1 = print the periodic status group; 0 = measure without it")
 set(EOS_FAST_RING 0 CACHE STRING "1 = replace the FreeRTOS fast queue with an SPSC ring")
 set(EOS_RING_DELAY_US 0 CACHE STRING "Busy wait in the ring consumer, for the slow-consumer run")
@@ -48,7 +49,7 @@ endif()
 if(EOS_FRESHNESS_DEADLINE_US EQUAL 0)
     set(EOS_FRESHNESS_DEADLINE_US ${_eos_default_deadline})
 endif()
-foreach(opt EOS_CORES EOS_PLACEMENT EOS_TARGET_KHZ EOS_FFT_SIZE EOS_DSP_REPEATS EOS_DISPLAY_ROWS EOS_DISPLAY_PERIOD_MS EOS_UI_PERIOD_MS EOS_ALARM_PERIOD_MS EOS_ALARM_DEADLINE_US EOS_ALARM_PRIORITY EOS_SEED_SMP_BUG EOS_DSP_RAM EOS_BUFFER_DEADLINE_US EOS_FRESHNESS_DEADLINE_US EOS_SCHED_MODE EOS_SCHED_PLACEMENT EOS_SCHED_LOOP_PER_MS EOS_REPORT_ENABLE EOS_FAST_RING EOS_RING_DELAY_US)
+foreach(opt EOS_CORES EOS_PLACEMENT EOS_TARGET_KHZ EOS_FFT_SIZE EOS_DSP_REPEATS EOS_DISPLAY_ROWS EOS_DISPLAY_PERIOD_MS EOS_UI_PERIOD_MS EOS_ALARM_PERIOD_MS EOS_ALARM_DEADLINE_US EOS_ALARM_PRIORITY EOS_SEED_SMP_BUG EOS_DSP_RAM EOS_BUFFER_DEADLINE_US EOS_FRESHNESS_DEADLINE_US EOS_SCHED_MODE EOS_SCHED_PLACEMENT EOS_SCHED_LOOP_PER_MS EOS_SCHED_TRACE EOS_REPORT_ENABLE EOS_FAST_RING EOS_RING_DELAY_US)
     message(STATUS "${opt}=${${opt}}")
 endforeach()
 if(NOT EOS_CORES MATCHES "^[12]$")
@@ -58,11 +59,19 @@ if(EOS_CORES EQUAL 1 AND NOT EOS_PLACEMENT EQUAL 0)
     message(FATAL_ERROR "EOS_PLACEMENT must be 0 when EOS_CORES=1")
 endif()
 
+if(EOS_SCHED_MODE)
+    if(EOS_CORES EQUAL 1 AND NOT EOS_SCHED_PLACEMENT EQUAL 0)
+        message(FATAL_ERROR "One-core scheduling requires EOS_SCHED_PLACEMENT=0")
+    endif()
+    if(EOS_CORES EQUAL 2 AND NOT EOS_SCHED_PLACEMENT MATCHES "^[12]$")
+        message(FATAL_ERROR "Two-core scheduling requires EOS_SCHED_PLACEMENT=1 or 2")
+    endif()
+endif()
 project(eos_lab04_condition C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 pico_sdk_init()
 
-add_executable(lab04_condition main.c sched_mode.c capture.c pool.c workload.c panel.c trace.c gt911.c)
+add_executable(lab04_condition main.c sched_mode.c placement.c sched_trace.c sched_release.c capture.c pool.c workload.c panel.c trace.c gt911.c)
 target_include_directories(lab04_condition PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_compile_definitions(lab04_condition PRIVATE
     EOS_CORES=${EOS_CORES}
@@ -81,6 +90,7 @@ target_compile_definitions(lab04_condition PRIVATE
     EOS_SCHED_PLACEMENT=${EOS_SCHED_PLACEMENT}
     EOS_SCHED_DHALL=${EOS_SCHED_DHALL}
     EOS_SCHED_LOOP_PER_MS=${EOS_SCHED_LOOP_PER_MS}
+    EOS_SCHED_TRACE=${EOS_SCHED_TRACE}
     EOS_REPORT_ENABLE=${EOS_REPORT_ENABLE}
     EOS_FAST_RING=${EOS_FAST_RING}
     EOS_RING_DELAY_US=${EOS_RING_DELAY_US}

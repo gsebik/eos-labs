@@ -4,8 +4,9 @@
  * into and which ones a reader currently holds. Every transition is explicit,
  * so a buffer that is being read can never become a DMA destination.
  *
- * The caller serializes all operations (the DMA interrupt and the processing
- * task mask interrupts around each call), so this module holds no lock itself.
+ * The transition functions in pool.c use a shared critical_section_t to
+ * serialize the DMA interrupt and processing task across cores. The lock also
+ * masks local interrupts while held; it is not just a local interrupt mask.
  */
 #pragma once
 #include <stdbool.h>

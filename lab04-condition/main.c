@@ -54,7 +54,7 @@
 #define EOS_ALARM_DEADLINE_US 2000
 #endif
 #ifndef EOS_SEED_SMP_BUG
-#define EOS_SEED_SMP_BUG 1
+#define EOS_SEED_SMP_BUG 0
 #endif
 #ifndef EOS_FAST_RING
 #define EOS_FAST_RING 0
@@ -423,7 +423,8 @@ static void report_status(void)
     printf("buffer_return_max_us=%lu publication_response_max_us=%lu "
            "compute_max_us=%lu draw_max_us=%lu "
            "settings_wait_max_us=%lu publish_wait_max_us=%lu adc_hz=%lu "
-           "spi_hz=%lu tone_hz=%lu rows=%u repeats=%u level=%lu detections=%lu "
+           "spi_hz=%lu tone_hz=%lu rows=%u repeats=%u fft_size=%u "
+           "buffer_deadline_us=%u freshness_deadline_us=%u level=%lu detections=%lu "
            "trace=%lu/%lu/%lu "
            "checksum=%.6f\n",
            (unsigned long)response, (unsigned long)publication,
@@ -432,7 +433,9 @@ static void report_status(void)
            (unsigned long)publish_wait, (unsigned long)sig_adc_hz(),
            (unsigned long)sig_panel_spi_hz(),
            (unsigned long)sig_signal_hz(),
-           (unsigned)EOS_DISPLAY_ROWS, (unsigned)EOS_DSP_REPEATS,
+            (unsigned)EOS_DISPLAY_ROWS, (unsigned)EOS_DSP_REPEATS,
+            (unsigned)EOS_FFT_SIZE, (unsigned)EOS_BUFFER_DEADLINE_US,
+            (unsigned)EOS_FRESHNESS_DEADLINE_US,
            (unsigned long)level, (unsigned long)hits,
            (unsigned long)g_sig_trace_count,
            (unsigned long)g_sig_trace_truncated,
@@ -678,7 +681,7 @@ void vApplicationMallocFailedHook(void)
 
 #if EOS_SIG_RTOS
 /* Alarm task: independent fast path. It consumes the short window copied by
- * the processing task and computes a level check. Its response is measured
+ * fast_hook in the DMA completion interrupt and computes a level check. Its response is measured
  * from the DMA block-ready timestamp, so queueing and preemption are included. */
 static void alarm_task(void *unused)
 {
@@ -858,8 +861,8 @@ int main(void)
     vTaskSetTaskNumber(alarm_handle, TASK_ID_CONTROLLER);
     vTaskSetTaskNumber(comm_handle, 6);
     vTaskSetTaskNumber(touch_handle, 7);
-    printf("lab04-condition cores=%d placement=%d target_khz=%d alarm_period_ms=%d alarm_deadline_us=%d alarm_prio=%d\n",
-           EOS_CORES, EOS_PLACEMENT, EOS_TARGET_KHZ, EOS_ALARM_PERIOD_MS,
+    printf("lab04-condition cores=%d placement=%d target_khz=%d alarm_deadline_us=%d alarm_prio=%d\n",
+           EOS_CORES, EOS_PLACEMENT, EOS_TARGET_KHZ,
            EOS_ALARM_DEADLINE_US, EOS_ALARM_PRIORITY);
     gpio_set_irq_enabled_with_callback(14, GPIO_IRQ_EDGE_FALL, true, button_isr);
     gpio_set_irq_enabled(15, GPIO_IRQ_EDGE_FALL, true);

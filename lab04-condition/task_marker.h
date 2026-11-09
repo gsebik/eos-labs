@@ -58,7 +58,14 @@ static inline void task_marker_publish(uint32_t task_number)
     TASK_MARKER_GPIO_OUT = (TASK_MARKER_GPIO_OUT & ~TASK_MARKER_MASK) | value;
 }
 
-#if !defined(TASK_MARKER_DISABLE) && !defined(__ASSEMBLER__)
+#if EOS_SCHED_MODE && EOS_SCHED_TRACE
+/* Two-core RAM recorder; never drive a shared set of GPIOs from both cores. */
+void eos_sched_trace_switch(unsigned task, unsigned kind);
+#define traceTASK_SWITCHED_IN() \
+    eos_sched_trace_switch((unsigned)uxTaskGetTaskNumber(xTaskGetCurrentTaskHandle()), 1u)
+#define traceTASK_SWITCHED_OUT() \
+    eos_sched_trace_switch((unsigned)uxTaskGetTaskNumber(xTaskGetCurrentTaskHandle()), 2u)
+#elif !defined(TASK_MARKER_DISABLE) && !defined(__ASSEMBLER__)
 #define traceTASK_SWITCHED_IN() \
     task_marker_publish((uint32_t)uxTaskGetTaskNumber(xTaskGetCurrentTaskHandle()))
 #endif

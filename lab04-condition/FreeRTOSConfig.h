@@ -21,6 +21,18 @@
 #define configUSE_IDLE_HOOK 0
 #define configUSE_TICK_HOOK 0
 
+#if !defined(__ASSEMBLER__) && EOS_SCHED_MODE
+/* FreeRTOS V11.3.1 calls this before incrementing xTickCount and before
+ * unblocking tasks. Skip the suspended calls: the kernel processes those
+ * pended ticks later in xTaskResumeAll. Do not use the end-of-tick hook here:
+ * an SMP task may already have been dispatched on the other core by then.
+ */
+void eos_sched_release_tick(uint32_t tick);
+#define traceTASK_INCREMENT_TICK(tick) do { \
+    if (uxSchedulerSuspended == 0u) eos_sched_release_tick((uint32_t)(tick) + 1u); \
+} while (0)
+#endif
+
 #define configENABLE_FPU 1
 #define configENABLE_MPU 0
 #define configENABLE_TRUSTZONE 0
