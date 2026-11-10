@@ -35,6 +35,20 @@ pico_enable_stdio_usb(lab01_calibration 0)
 pico_enable_stdio_uart(lab01_calibration 1)
 pico_add_extra_outputs(lab01_calibration)
 
+# Start of the lab: a bare SDK check, then two FreeRTOS tasks blinking two LEDs.
+add_executable(lab01_hello hello.c)
+target_link_libraries(lab01_hello pico_stdlib)
+pico_enable_stdio_usb(lab01_hello 0)
+pico_enable_stdio_uart(lab01_hello 1)
+pico_add_extra_outputs(lab01_hello)
+
+add_executable(lab01_tasks tasks.c)
+target_include_directories(lab01_tasks PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
+target_link_libraries(lab01_tasks pico_stdlib FreeRTOS-Kernel-Heap4)
+pico_enable_stdio_usb(lab01_tasks 0)
+pico_enable_stdio_uart(lab01_tasks 1)
+pico_add_extra_outputs(lab01_tasks)
+
 add_executable(lab01_mode1 "${L1_MAIN_SOURCE}")
 add_executable(lab01_mode2 "${L1_MAIN_SOURCE}")
 add_executable(lab01_mode3 "${L1_MAIN_SOURCE}")

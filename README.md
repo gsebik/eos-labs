@@ -5,7 +5,7 @@ course sequence and the student instructions live in the course documentation.
 
 | Lab | Directory | Guide | Build targets |
 |---|---|---|---|
-| L1 | [`lab01/`](lab01/) | Kernel and timing | `lab01_calibration`, `lab01_mode1`…`lab01_mode4` |
+| L1 | [`lab01/`](lab01/) | Kernel and timing | `lab01_hello`, `lab01_tasks`, `lab01_calibration`, `lab01_mode1`…`lab01_mode4` |
 | L2 | [`lab02/`](lab02/) | Communication and sharing | `lab02_mode1`…`lab02_mode4` |
 | L3 | [`lab03/`](lab03/) | Spectrum instrument | `lab03_instrument_rtos`, `lab03_instrument_foreground`, `lab03_priority_inheritance` |
 | L4 | [`lab04-condition/`](lab04-condition/) (draft) | Multicore design | `lab04_condition` |
