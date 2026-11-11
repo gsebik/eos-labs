@@ -8,6 +8,8 @@ enum { LED = 16 };
 int main(void)
 {
     stdio_init_all();
+    /* Pause so the monitor can attach before the one-time banner. */
+    sleep_ms(2000);
     gpio_init(LED);
     gpio_set_dir(LED, GPIO_OUT);
 
