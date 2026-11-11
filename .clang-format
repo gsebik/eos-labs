@@ -1,0 +1,45 @@
+# EOS lab C style — see C-STYLE.md for the one-page rationale.
+# Apply: clang-format -i lab01/*.c lab01/*.h lab02/*.c lab02/*.h
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 90
+
+# Braces always (InsertBraces), and the file's existing shape: a function's
+# brace on its own line, a control statement's brace on the same line.
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+  AfterControlStatement: false
+  AfterStruct: false
+  AfterEnum: false
+  BeforeElse: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: false
+InsertBraces: true
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+
+# One statement per line; one declaration per line is a hand rule (C-STYLE.md).
+Cpp11BracedListStyle: false
+IndentCaseLabels: true
+PointerAlignment: Right
+SpaceAfterCStyleCast: false
+SpacesBeforeTrailingComments: 2
+
+# Keep include order and macro blocks stable: this code follows SDK idioms.
+SortIncludes: false
+AlignConsecutiveMacros: Consecutive
+AlignConsecutiveAssignments: false
+ReflowComments: true
+
+# lab02 selects whole experiments with #if; keep the directives at column 0.
+IndentPPDirectives: None

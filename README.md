@@ -19,6 +19,11 @@ The primary station is a Pico 2 W on the EP-0172 carrier with a PicoGremlin.
 L1–L4 build against **FreeRTOS V11.3.1** with its RP2350 Arm port; set
 `FREERTOS_KERNEL_PATH` to that checkout (the lab manual shows how to get it).
 
+Code style is enforced by [`.clang-format`](.clang-format) and explained in
+[`C-STYLE.md`](C-STYLE.md): 4 spaces, 90 columns, braces always, one declaration
+per line, named constants, comments that say why. Run
+`clang-format -i labNN/*.c labNN/*.h` before committing.
+
 ## Getting the source
 
 ```sh
